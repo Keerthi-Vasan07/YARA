@@ -1,54 +1,50 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# Node / Vite
-node_modules/
-dist/
-.vite/
-
-# Env files (keep examples)
-.env
-.env.*
-!.env.example
-
-# TypeScript build info
-*.tsbuildinfo
-
+```
 # Python
-.venv/
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.ENV
+.ENV.local
+.env
+.env.local
+.env.*
+
+# Build and distribution artifacts
+build/
+dist/
+*.egg-info/
+
+# Testing
+.coverage
+htmlcov/
+.nox/
+.tox/
+.coverage.*
+.cache
 .pytest_cache/
+.mypy_cache/
 
-# Server data (COGs, Zarr, samples)
-server/products/
-server/zarr/
-server/sample_data/
-server/tiles/
-server/cache/
+# Logs
+*.log
 
-# STAC catalog output (keep catalog.py code, ignore generated JSON)
-server/stac/catalog.json
-server/stac/collections/
-server/stac/items/
-*.tif
-*.nc
-*.zarr/
-
-# SSH keys
-infra/keys/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# OS / Editor
+# OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-.idea/
+
+# Editor specific
 .vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+```
