@@ -15,7 +15,7 @@ export function GridOverlay({ viewer, datasetId, variable }: { viewer: Cesium.Vi
       const { west, east, south, north } = grid.extent;
       const addLine = (points: number[]) => entities.push(viewer.entities.add({ polyline: {
         positions: Cesium.Cartesian3.fromDegreesArray(points), width: 1,
-        material: Cesium.Color.WHITE.withAlpha(0.45), arcType: Cesium.ArcType.NONE,
+        material: Cesium.Color.WHITE.withAlpha(0.45), arcType: Cesium.ArcType.RHUMB,
       } }));
       // Densify geographic lines. Endpoints alone would draw chords through Earth.
       for (const lat of grid.latitudes) {

@@ -26,7 +26,11 @@ import { fetchTimeRangeForVariable, fetchSSTPoint, fetchVariablePoint, TimeRange
 import { LocalDatasetModal } from './LocalDataset/LocalDatasetModal';
 import { DatasetVariableSelector } from './LocalDataset/DatasetVariableSelector';
 import { PlaybackControls } from './LocalDataset/PlaybackControls';
-import { DatasetInfo } from '../types/dataset';
+import { DatasetInfo, AnalysisOptions, LocalPointQueryResponse } from '../types/dataset';
+import { defaultAnalysis, analysisError } from '../utils/gradientColormap';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { LocalPointInfoPanel } from './LocalPointInfoPanel';
+import { LocalAnalysisStatus } from './LocalAnalysisStatus';
 import { fetchActiveMode, fetchLocalPoint } from '../services/localDatasetApi';
 
 export function Layout() {
@@ -83,6 +87,29 @@ export function Layout() {
   const [localVariable, setLocalVariable] = useState<string>('');
   const [localTimeIndex, setLocalTimeIndex] = useState<number>(0);
   const [localModalOpen, setLocalModalOpen] = useState<boolean>(false);
+  const [localAnalysis, setLocalAnalysis] = useState<AnalysisOptions>(defaultAnalysis);
+  const [validAnalysis, setValidAnalysis] = useState<AnalysisOptions>(defaultAnalysis);
+  const [localGridEnabled, setLocalGridEnabled] = useState(false);
+  const [localPoint, setLocalPoint] = useState<LocalPointQueryResponse | null>(null);
+  const [localPointLoading, setLocalPointLoading] = useState(false);
+  const [localPointError, setLocalPointError] = useState('');
+  const [localClick, setLocalClick] = useState<{ lat: number; lon: number } | null>(null);
+  useEffect(() => {
+    if (!analysisError(localAnalysis)) setValidAnalysis(localAnalysis);
+  }, [localAnalysis]);
+  const debouncedAnalysis = useDebouncedValue(validAnalysis);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLocalPoint(null); setLocalPointError(''); setLocalPointLoading(false);
+    if (activeMode !== 'local' || !activeDataset || !localClick) return;
+    setLocalPointLoading(true);
+    fetchLocalPoint(activeDataset.id, localClick.lat, localClick.lon, localVariable, localTimeIndex)
+      .then(data => { if (!cancelled) setLocalPoint(data); })
+      .catch(err => { if (!cancelled) setLocalPointError(String(err)); })
+      .finally(() => { if (!cancelled) setLocalPointLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeMode, activeDataset, localVariable, localTimeIndex, localClick]);
 
   // URL state management - read initial values from URL
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
@@ -274,6 +301,8 @@ export function Layout() {
     return localStorage.getItem('sst-colormap') || 'thermal';
   });
   const [colorScaleOpen, setColorScaleOpen] = useState(false);
+  const localFrameStyle = useMemo(() => ({ analysis: debouncedAnalysis, colormap,
+    minVal: colorScaleMin, maxVal: colorScaleMax }), [debouncedAnalysis, colormap, colorScaleMin, colorScaleMax]);
 
   // Threshold masking state
   const [thresholdEnabled, setThresholdEnabled] = useState(false);
@@ -337,6 +366,11 @@ export function Layout() {
 
   // Handle map click - query visible layers at point
   const handleMapClick = useCallback(async (lon: number, lat: number) => {
+    if (activeMode === 'local' && activeDataset) {
+      setLocalClick({ lat, lon });
+      setClickedPosition({ lat, lon });
+      return;
+    }
     if (!selectedDate) return;
     
     // Get visible layers that support point queries
@@ -360,45 +394,6 @@ export function Layout() {
       }
     }
     
-    // Local Dataset point query
-    if (activeMode === 'local' && activeDataset) {
-      setClickedPosition({ lon, lat });
-      setSstPointLoading(true);
-      setSstPointData(null);
-      setScreenPosition(currentScreenPos);
-
-      try {
-        const pdata = await fetchLocalPoint(
-          activeDataset.id,
-          lat,
-          lon,
-          localVariable || activeDataset.default_variable,
-          localTimeIndex
-        );
-        setSstPointData({
-          date: pdata.timestamp || selectedDate,
-          lon: pdata.matched_lon,
-          lat: pdata.matched_lat,
-          sst: pdata.is_valid && pdata.value !== undefined ? pdata.value : null,
-          unit: pdata.units || '',
-          message: pdata.is_valid ? undefined : 'No data / Land cell'
-        });
-      } catch (err) {
-        console.error('Failed to query local point:', err);
-        setSstPointData({
-          date: selectedDate,
-          lon,
-          lat,
-          sst: null,
-          unit: '',
-          message: 'Failed to query local dataset point'
-        });
-      } finally {
-        setSstPointLoading(false);
-      }
-      return;
-    }
-
     // Query SST if visible
     if (sstLayer?.visible) {
       setClickedPosition({ lon, lat });
@@ -450,7 +445,7 @@ export function Layout() {
         setVariablePointLoading(false);
       }
     }
-  }, [selectedDate, layers]);
+  }, [selectedDate, layers, activeMode, activeDataset]);
 
   const handleCloseSstPanel = useCallback(() => {
     setSstPointData(null);
@@ -641,6 +636,10 @@ export function Layout() {
     setActiveDataset(dataset);
     setLocalVariable(dataset.default_variable || Object.keys(dataset.variables)[0] || '');
     setLocalTimeIndex(0);
+    setLocalClick(null);
+    setIsLoading(false);
+    setError(null);
+    setColorScaleOpen(true);
     const ts = dataset.time_axis.timestamps;
     if (ts && ts.length > 0) {
       setSelectedDate(ts[0]);
@@ -773,8 +772,16 @@ export function Layout() {
         activeDataset={activeDataset}
         localVariable={localVariable}
         localTimeIndex={localTimeIndex}
+        localAnalysis={debouncedAnalysis}
+        localGridEnabled={localGridEnabled}
         colormap={colormap}
       />
+
+      {activeMode === 'local' && activeDataset && <>
+        <LocalAnalysisStatus datasetId={activeDataset.id} variable={localVariable} index={localTimeIndex} style={localFrameStyle} />
+        <LocalPointInfoPanel data={localPoint} loading={localPointLoading} error={localPointError}
+          onClose={() => { setLocalClick(null); setClickedPosition(null); }} />
+      </>}
 
       {/* Bounding Box Drawing Overlay */}
       <BboxDrawingOverlay
@@ -839,6 +846,9 @@ export function Layout() {
       {/* Color Scale Controls - Bottom right, above map controls */}
       {colorScaleOpen && (
         <ColorScaleControls
+          localAnalysis={activeMode === 'local' ? { value: localAnalysis, onChange: setLocalAnalysis,
+            gridEnabled: localGridEnabled, onGridChange: setLocalGridEnabled,
+            units: activeDataset?.variables[localVariable]?.units } : undefined}
           minTemp={colorScaleMin}
           maxTemp={colorScaleMax}
           colormap={colormap}
@@ -900,16 +910,16 @@ export function Layout() {
 
       {/* SST Point Query Panel */}
       <SSTInfoPanel
-        data={sstPointData}
-        loading={sstPointLoading}
+        data={activeMode === 'online' ? sstPointData : null}
+        loading={activeMode === 'online' && sstPointLoading}
         onClose={handleCloseSstPanel}
         screenPosition={screenPosition}
       />
 
       {/* Variable (SIC/SLA) Point Query Panel */}
       <VariableInfoPanel
-        data={variablePointData}
-        loading={variablePointLoading}
+        data={activeMode === 'online' ? variablePointData : null}
+        loading={activeMode === 'online' && variablePointLoading}
         onClose={handleCloseVariablePanel}
         screenPosition={variableScreenPosition}
         topOffset={(sstPointData || sstPointLoading) ? 420 : 0}
@@ -993,13 +1003,13 @@ export function Layout() {
           <DatasetVariableSelector
             dataset={activeDataset}
             selectedVariable={localVariable}
-            onSelectVariable={setLocalVariable}
+            onSelectVariable={variable => { setLocalVariable(variable); setLocalTimeIndex(0); }}
           />
         </Box>
       )}
 
       {/* Floating Playback Controls for Multi-Frame Datasets */}
-      {activeMode === 'local' && activeDataset && activeDataset.time_axis.count > 1 && (
+      {activeMode === 'local' && activeDataset && activeDataset.time_axis.count > 1 && activeDataset.variables[localVariable]?.has_time && (
         <Box sx={{ position: 'absolute', bottom: 85, left: sidebarWidth + 20, zIndex: 1000 }}>
           <PlaybackControls
             timestamps={activeDataset.time_axis.timestamps}
@@ -1015,6 +1025,8 @@ export function Layout() {
             datasetId={activeDataset.id}
             variable={localVariable}
             resolution={activeDataset.time_axis.resolution}
+            frameStyle={localFrameStyle}
+            frameCount={activeDataset.time_axis.count}
           />
         </Box>
       )}
