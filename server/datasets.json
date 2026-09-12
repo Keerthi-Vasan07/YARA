@@ -1,0 +1,268 @@
+{
+  "sst": {
+    "name": "Sea Surface Temperature",
+    "unit": "°C",
+    "colormap": "thermal",
+    "scale": "linear",
+    "range": [-2, 35],
+    "l4": {
+      "product_id": "SST_GLO_SST_L4_NRT_OBSERVATIONS_010_001",
+      "dataset_id": "METOFFICE-GLO-SST-L4-NRT-OBS-SST-V2",
+      "dataset_name": "OSTIA Global SST L4 Daily NRT",
+      "resolution": "0.05° (~6km)",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "data": "analysed_sst",
+        "mask": "mask"
+      },
+      "units_in_file": "kelvin",
+      "notes": "L4 gap-filled analysis - daily, combines IR+MW+in-situ"
+    },
+    "nrt": {
+      "product_id": "SST_GLO_SST_L3S_NRT_OBSERVATIONS_010_010",
+      "dataset_id": "IFREMER-GLOB-SST-L3-NRT-OBS_FULL_TIME_SERIE",
+      "dataset_name": "ODYSSEA Global SST L3S Daily Multi-Sensor",
+      "resolution": "0.05° (~5km)",
+      "bbox": [-180, -80, 180, 80],
+      "variables": {
+        "data": "analysed_sst",
+        "quality": "quality_level",
+        "uncertainty": "analysed_sst_uncertainty"
+      },
+      "units_in_file": "kelvin",
+      "notes": "L3 NRT - nighttime IR+MW observations only"
+    },
+    "rep": {
+      "product_id": "SST_GLO_PHY_L3S_MY_010_039",
+      "dataset_id": "cmems_obs-sst_glo_phy_my_l3s_P1D-m",
+      "dataset_name": "ODYSSEA Global SST L3S MY Multi-sensor",
+      "resolution": "0.05° (~5km)",
+      "bbox": [-180, -80, 180, 80],
+      "variables": {
+        "data": "adjusted_sea_surface_temperature",
+        "quality": "quality_level",
+        "uncertainty": "sses_standard_deviation"
+      },
+      "units_in_file": "kelvin",
+      "notes": "L3 MY reprocessed - ESA CCI/C3S archive, intercalibrated"
+    },
+    "qc": {
+      "variable": "quality_level",
+      "valid_values": [4, 5],
+      "meanings": {
+        "0": "no_data",
+        "1": "bad_data",
+        "2": "worst_quality",
+        "3": "low_quality", 
+        "4": "acceptable_quality",
+        "5": "best_quality"
+      },
+      "notes": "Use quality_level >= 4 for reliable data"
+    }
+  },
+  "chl": {
+    "name": "Chlorophyll-a Concentration",
+    "unit": "mg/m³",
+    "colormap": "algae",
+    "scale": "log",
+    "range": [0.01, 100],
+    "nrt": {
+      "product_id": "OCEANCOLOUR_GLO_BGC_L3_NRT_009_101",
+      "dataset_id": "cmems_obs-oc_glo_bgc-plankton_nrt_l3-multi-4km_P1D",
+      "dataset_name": "Global Ocean Colour L3 Daily Multi-sensor 4km Plankton NRT",
+      "resolution": "4km (~0.04°)",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "data": "CHL",
+        "uncertainty": "CHL_uncertainty"
+      },
+      "units_in_file": "mg/m³",
+      "notes": "Multi-sensor merged chlorophyll - daily NRT"
+    },
+    "rep": {
+      "product_id": "OCEANCOLOUR_GLO_BGC_L3_MY_009_103",
+      "dataset_id": "cmems_obs-oc_glo_bgc-plankton_my_l3-multi-4km_P1D",
+      "dataset_name": "Global Ocean Colour L3 Daily Multi-sensor 4km Plankton MY",
+      "resolution": "4km (~0.04°)",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "data": "CHL",
+        "uncertainty": "CHL_uncertainty"
+      },
+      "units_in_file": "mg/m³",
+      "notes": "Multi-year reprocessed - stable record from 1997"
+    },
+    "qc": {
+      "notes": "CHL uses NaN for invalid pixels (cloud, land, glint). No separate QC flag variable - mask on NaN."
+    }
+  },
+  "sic": {
+    "name": "Sea Ice Concentration",
+    "unit": "%",
+    "colormap": "ice",
+    "scale": "linear",
+    "range": [0, 100],
+    "l4": {
+      "product_id": "SEAICE_GLO_SEAICE_L4_NRT_OBSERVATIONS_011_001",
+      "dataset_id": "osisaf_obs-si_glo_phy-sic-north_nrt_amsr2_l4_P1D-m",
+      "dataset_name": "Arctic Sea Ice Concentration L4 Daily NRT (AMSR2)",
+      "resolution": "10km",
+      "bbox": [-180, 30, 180, 90],
+      "variables": {
+        "data": "ice_conc",
+        "uncertainty": "total_standard_uncertainty"
+      },
+      "units_in_file": "percent (0-100)",
+      "notes": "OSI SAF product via CMEMS. Values in 0-100%."
+    },
+    "south": {
+      "product_id": "SEAICE_GLO_SEAICE_L4_NRT_OBSERVATIONS_011_001",
+      "dataset_id": "osisaf_obs-si_glo_phy-sic-south_nrt_amsr2_l4_P1D-m",
+      "dataset_name": "Antarctic Sea Ice Concentration L4 Daily NRT (AMSR2)",
+      "resolution": "10km",
+      "bbox": [-180, -90, 180, -30],
+      "variables": {
+        "data": "ice_conc",
+        "uncertainty": "total_standard_uncertainty"
+      },
+      "units_in_file": "percent (0-100)",
+      "notes": "OSI SAF product via CMEMS. Values in 0-100%."
+    },
+    "rep": {
+      "product_id": "SEAICE_GLO_SEAICE_L4_REP_OBSERVATIONS_011_009",
+      "dataset_id": "cmems_obs-si_glo_phy-conc_my_l4_P1D",
+      "dataset_name": "Global Sea Ice Concentration L4 Daily MY",
+      "resolution": "25km",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "data": "ice_conc",
+        "status_flag": "status_flag"
+      },
+      "units_in_file": "fraction (0-1)",
+      "notes": "OSI SAF reprocessed - covers both poles, 1978-present"
+    },
+    "qc": {
+      "variable": "status_flag",
+      "valid_values": [0, 10, 11, 12],
+      "meanings": {
+        "0": "nominal_quality",
+        "10": "open_water",
+        "11": "ice_free",
+        "12": "over_land_or_lake"
+      },
+      "notes": "Mask status_flag >= 20 (coast, bad data). Values 10-12 are valid ocean."
+    }
+  },
+  "sla": {
+    "name": "Sea Level Anomaly",
+    "unit": "m",
+    "colormap": "balance",
+    "scale": "linear",
+    "range": [-0.5, 0.5],
+    "nrt": {
+      "product_id": "SEALEVEL_GLO_PHY_L4_NRT_008_046",
+      "dataset_id": "cmems_obs-sl_glo_phy-ssh_nrt_allsat-l4-duacs-0.125deg_P1D",
+      "dataset_name": "Global Ocean Gridded L4 Sea Surface Heights NRT",
+      "resolution": "0.125° (~14km)",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "data": "sla",
+        "adt": "adt",
+        "ugos": "ugos",
+        "vgos": "vgos"
+      },
+      "units_in_file": "meters",
+      "notes": "DUACS L4 merged altimetry - daily maps. SLA is anomaly from mean sea surface."
+    },
+    "rep": {
+      "product_id": "SEALEVEL_GLO_PHY_L4_MY_008_047",
+      "dataset_id": "cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D",
+      "dataset_name": "Global Ocean Gridded L4 Sea Surface Heights MY",
+      "resolution": "0.125° (~14km)",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "data": "sla",
+        "adt": "adt",
+        "ugos": "ugos",
+        "vgos": "vgos"
+      },
+      "units_in_file": "meters",
+      "notes": "DUACS L4 reprocessed - consistent 1993-present record"
+    },
+    "qc": {
+      "notes": "SLA uses NaN for land and invalid pixels. Additional mask: where abs(sla) > 2m likely bad."
+    }
+  },
+  "kd490": {
+    "name": "Diffuse Attenuation Coefficient",
+    "unit": "m⁻¹",
+    "colormap": "deep",
+    "scale": "log",
+    "range": [0.01, 5],
+    "nrt": {
+      "product_id": "OCEANCOLOUR_GLO_BGC_L4_NRT_009_102",
+      "dataset_id": "cmems_obs-oc_glo_bgc-transp_nrt_l4-gapfree-multi-4km_P1D",
+      "dataset_name": "Global Ocean Colour L4 Gap-free Daily Transparency NRT",
+      "resolution": "4km (~0.04°)",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "data": "KD490"
+      },
+      "units_in_file": "m^-1",
+      "notes": "L4 gap-filled - measures how quickly light attenuates with depth"
+    },
+    "rep": {
+      "product_id": "OCEANCOLOUR_GLO_BGC_L4_MY_009_104",
+      "dataset_id": "cmems_obs-oc_glo_bgc-transp_my_l4-gapfree-multi-4km_P1D",
+      "dataset_name": "Global Ocean Colour L4 Gap-free Daily Transparency MY",
+      "resolution": "4km (~0.04°)",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "data": "KD490"
+      },
+      "units_in_file": "m^-1",
+      "notes": "L4 gap-filled reprocessed - water clarity indicator"
+    },
+    "qc": {
+      "notes": "Kd490 uses NaN for invalid pixels. Log scale typical: 0.01 (clear open ocean) to 5+ (turbid coastal)."
+    }
+  },
+  "rrs": {
+    "name": "Ocean Colour RGB",
+    "unit": "sr⁻¹",
+    "colormap": "rgb",
+    "scale": "linear",
+    "range": [0, 1],
+    "nrt": {
+      "product_id": "OCEANCOLOUR_GLO_BGC_L3_NRT_009_101",
+      "dataset_id": "cmems_obs-oc_glo_bgc-reflectance_nrt_l3-multi-4km_P1D",
+      "dataset_name": "Global Ocean Colour L3 Daily Reflectance NRT",
+      "resolution": "4km (~0.04°)",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "red": "RRS670",
+        "green": "RRS555",
+        "blue": "RRS443"
+      },
+      "units_in_file": "sr^-1",
+      "notes": "RGB composite from Rrs bands - shows phytoplankton blooms as green/brown"
+    },
+    "rep": {
+      "product_id": "OCEANCOLOUR_GLO_BGC_L3_MY_009_103",
+      "dataset_id": "cmems_obs-oc_glo_bgc-reflectance_my_l3-multi-4km_P1D",
+      "dataset_name": "Global Ocean Colour L3 Daily Reflectance MY",
+      "resolution": "4km (~0.04°)",
+      "bbox": [-180, -90, 180, 90],
+      "variables": {
+        "red": "RRS670",
+        "green": "RRS555",
+        "blue": "RRS443"
+      },
+      "units_in_file": "sr^-1",
+      "notes": "RGB composite from Rrs bands - multi-year reprocessed"
+    },
+    "qc": {
+      "notes": "Rrs uses alpha=0 for nodata pixels (cloud, land, sun glint). L3 product has gaps."
+    }
+  }
+}
