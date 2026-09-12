@@ -17,6 +17,7 @@ except ImportError:
     HAS_CMOCEAN = False
 
 from ..data_sources.local.common_model import SliceData
+from .gradient_colormap import AnalysisOptions, analyze_slice, gradient_rgba, rgb
 
 
 def get_colormap_for_variable(var_name: str, requested_colormap: Optional[str] = None):
@@ -61,28 +62,32 @@ def render_slice_to_png(
     slice_data: SliceData,
     colormap_name: Optional[str] = None,
     min_val: Optional[float] = None,
-    max_val: Optional[float] = None
+    max_val: Optional[float] = None,
+    analysis: Optional[AnalysisOptions] = None
 ) -> bytes:
     """
     Renders a SliceData 2D array into a transparent RGBA PNG image.
     NaNs and nodata are transparent (alpha=0), allowing MapTiler land basemap to show through.
     """
-    data = slice_data.data
-    mask = slice_data.mask if slice_data.mask is not None else np.isnan(data)
-
-    # Determine display range
+    analysis = analysis or AnalysisOptions()
+    data, matching, _ = analyze_slice(slice_data, analysis)
+    mask = ~matching
     v_min = min_val if min_val is not None else slice_data.min_val
     v_max = max_val if max_val is not None else slice_data.max_val
-    if v_max <= v_min:
-        v_max = v_min + 1.0
-
-    # Normalize to [0.0, 1.0]
-    norm = np.clip((data - v_min) / (v_max - v_min), 0.0, 1.0)
-    norm[mask] = 0.0
-
-    # Apply colormap
-    cmap = get_colormap_for_variable(slice_data.variable_name, colormap_name)
-    rgba = cmap(norm)  # returns shape (H, W, 4) in [0.0, 1.0]
+    if analysis.mode == "range":
+        v_min, v_max = analysis.range_min, analysis.range_max
+    if not np.isfinite(v_min) or not np.isfinite(v_max) or v_min > v_max:
+        raise ValueError("Color scale must be finite with minimum <= maximum")
+    norm = np.clip((data - v_min) / (v_max - v_min if v_max > v_min else 1), 0, 1)
+    norm[mask] = 0
+    if analysis.mode == "exact":
+        rgba = np.ones((*data.shape, 4), dtype=float)
+        rgba[..., :3] = rgb(analysis.flat_color)
+    elif analysis.stops or analysis.mode == "range":
+        rgba = gradient_rgba(norm, analysis.stops)
+    else:
+        cmap = get_colormap_for_variable(slice_data.variable_name, colormap_name)
+        rgba = cmap(norm)
 
     # Convert to uint8 [0, 255]
     rgba_uint8 = (rgba * 255.0).astype(np.uint8)

@@ -1,114 +1,79 @@
-"""
-Two-Tier Frame Cache for YARA Fast Playback.
-Maintains in-memory LRU cache and persistent disk cache for rendered PNG frames.
-"""
-
+"""Thread-safe two-tier LRU frame cache with complete, canonical parameter keys."""
 from pathlib import Path
-from typing import Optional, Dict
 from collections import OrderedDict
+from threading import RLock
+from hashlib import sha256
+from tempfile import NamedTemporaryFile
+import json
 import logging
 
 logger = logging.getLogger(__name__)
-
 CACHE_DIR = Path("cache/frames")
-MAX_MEMORY_FRAMES = 120  # Store up to 120 uncompressed/compressed frames in RAM
+MAX_MEMORY_FRAMES = 120
 
 
 class FrameCache:
-    """Manages memory and disk caching for scientific visualization frames."""
-
-    def __init__(self, cache_dir: Path = CACHE_DIR, max_memory_frames: int = MAX_MEMORY_FRAMES):
-        self.cache_dir = cache_dir
+    def __init__(self, cache_dir=CACHE_DIR, max_memory_frames=MAX_MEMORY_FRAMES):
+        self.cache_dir = Path(cache_dir)
         self.max_memory_frames = max_memory_frames
-        self._memory_cache: OrderedDict[str, bytes] = OrderedDict()
+        self._memory_cache = OrderedDict()
+        self._lock = RLock()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _make_key(
-        self,
-        dataset_id: str,
-        variable: str,
-        time_index: int,
-        colormap: Optional[str] = None,
-        min_val: Optional[float] = None,
-        max_val: Optional[float] = None
-    ) -> str:
-        cmap_str = colormap or "default"
-        scale_str = f"{min_val}_{max_val}" if (min_val is not None and max_val is not None) else "auto"
-        return f"{dataset_id}_{variable}_t{time_index}_{cmap_str}_{scale_str}"
+    def _prefix(self, dataset_id):
+        return sha256(dataset_id.encode()).hexdigest()[:24] + "_"
 
-    def get(
-        self,
-        dataset_id: str,
-        variable: str,
-        time_index: int,
-        colormap: Optional[str] = None,
-        min_val: Optional[float] = None,
-        max_val: Optional[float] = None
-    ) -> Optional[bytes]:
-        key = self._make_key(dataset_id, variable, time_index, colormap, min_val, max_val)
+    def _make_key(self, dataset_id, variable, time_index, colormap=None, min_val=None, max_val=None, analysis=None, revision=None):
+        options = analysis.model_dump() if analysis is not None else None
+        payload = [3, dataset_id, variable, time_index, colormap, min_val, max_val, options, revision]
+        return self._prefix(dataset_id) + sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
-        # 1. Check memory cache (fastest)
-        if key in self._memory_cache:
-            self._memory_cache.move_to_end(key)
-            return self._memory_cache[key]
-
-        # 2. Check disk cache
-        disk_path = self.cache_dir / f"{key}.png"
-        if disk_path.exists():
-            try:
-                data = disk_path.read_bytes()
-                # Promote to memory cache
-                self.put(dataset_id, variable, time_index, data, colormap, min_val, max_val)
-                return data
-            except Exception as e:
-                logger.warning(f"Failed to read disk frame cache for {key}: {e}")
-
+    def get(self, dataset_id, variable, time_index, colormap=None, min_val=None, max_val=None, analysis=None, revision=None):
+        key = self._make_key(dataset_id, variable, time_index, colormap, min_val, max_val, analysis, revision)
+        with self._lock:
+            if key in self._memory_cache:
+                self._memory_cache.move_to_end(key)
+                return self._memory_cache[key]
+            path = self.cache_dir / f"{key}.png"
+            if path.exists():
+                try:
+                    data = path.read_bytes()
+                    self._remember(key, data)
+                    return data
+                except OSError as exc:
+                    logger.warning("Could not read cached frame: %s", exc)
         return None
 
-    def put(
-        self,
-        dataset_id: str,
-        variable: str,
-        time_index: int,
-        png_bytes: bytes,
-        colormap: Optional[str] = None,
-        min_val: Optional[float] = None,
-        max_val: Optional[float] = None
-    ):
-        key = self._make_key(dataset_id, variable, time_index, colormap, min_val, max_val)
-
-        # Save to memory cache with LRU eviction
-        self._memory_cache[key] = png_bytes
+    def _remember(self, key, data):
+        self._memory_cache[key] = data
         self._memory_cache.move_to_end(key)
-        if len(self._memory_cache) > self.max_memory_frames:
+        while len(self._memory_cache) > self.max_memory_frames:
             self._memory_cache.popitem(last=False)
 
-        # Save to disk asynchronously/safely
-        disk_path = self.cache_dir / f"{key}.png"
-        try:
-            disk_path.write_bytes(png_bytes)
-        except Exception as e:
-            logger.debug(f"Failed to write disk cache for {key}: {e}")
+    def put(self, dataset_id, variable, time_index, png_bytes, colormap=None, min_val=None, max_val=None, analysis=None, revision=None):
+        key = self._make_key(dataset_id, variable, time_index, colormap, min_val, max_val, analysis, revision)
+        with self._lock:
+            self._remember(key, png_bytes)
+            temp = None
+            try:
+                with NamedTemporaryFile(dir=self.cache_dir, suffix=".tmp", delete=False) as stream:
+                    temp = Path(stream.name)
+                    stream.write(png_bytes)
+                temp.replace(self.cache_dir / f"{key}.png")
+            except OSError as exc:
+                logger.warning("Could not persist frame: %s", exc)
+            finally:
+                if temp is not None:
+                    temp.unlink(missing_ok=True)
 
-    def clear(self, dataset_id: Optional[str] = None):
-        """Clears memory cache and optionally disk cache."""
-        if dataset_id is None:
-            self._memory_cache.clear()
-            for f in self.cache_dir.glob("*.png"):
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
-        else:
-            keys_to_del = [k for k in self._memory_cache if k.startswith(dataset_id)]
-            for k in keys_to_del:
-                del self._memory_cache[k]
-            for f in self.cache_dir.glob(f"{dataset_id}_*.png"):
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
+    def clear(self, dataset_id=None):
+        with self._lock:
+            prefix = self._prefix(dataset_id) if dataset_id is not None else ""
+            for key in list(self._memory_cache):
+                if key.startswith(prefix):
+                    del self._memory_cache[key]
+            for path in self.cache_dir.glob(f"{prefix}*.png"):
+                path.unlink(missing_ok=True)
 
 
-# Global frame cache instance
 frame_cache = FrameCache()

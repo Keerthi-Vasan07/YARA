@@ -21,7 +21,7 @@ from .common_model import (
     SliceData,
     PointQueryResponse
 )
-from .coordinate_utils import normalize_grid_to_wgs84, find_nearest_cell
+from .coordinate_utils import normalize_grid_to_wgs84, find_nearest_cell, cell_bounds, read_rectilinear_slice
 from .time_utils import analyze_time_axis, to_iso_string
 from .variable_detection import (
     is_coordinate_or_metadata_var,
@@ -140,8 +140,8 @@ class NetCDFReader(BaseScientificReader):
             fill_val = da.attrs.get("_FillValue") or da.attrs.get("missing_value")
 
             # Check if this variable has spatial dimensions
-            has_lat = any(d in self._lat_name or self._lat_name in d for d in dims)
-            has_lon = any(d in self._lon_name or self._lon_name in d for d in dims)
+            has_lat = ds[self._lat_name].dims[0] in dims
+            has_lon = ds[self._lon_name].dims[0] in dims
             var_type = VariableType.SCALAR_GRID if (has_lat and has_lon) else VariableType.UNKNOWN
 
             aliases = match_variable_aliases(var_name, std_name)
@@ -228,29 +228,8 @@ class NetCDFReader(BaseScientificReader):
 
         da = ds[target_var]
         
-        # Build indexer dictionary for lazy slicing
-        indexer = {}
-        if self._time_name and self._time_name in da.dims:
-            max_t = da.sizes[self._time_name]
-            idx = max(0, min(time_index, max_t - 1))
-            indexer[self._time_name] = idx
-
-        if self._depth_name and self._depth_name in da.dims:
-            indexer[self._depth_name] = 0
-
-        # Also handle any other non-spatial dimensions
-        for d in da.dims:
-            if d not in (self._lat_name, self._lon_name) and d not in indexer:
-                indexer[d] = 0
-
-        # Lazy slice
-        sliced = da.isel(indexer)
-        raw_data = np.asarray(sliced.values, dtype=np.float32)
-
-        # Handle squeeze if singleton dimensions remain
-        raw_data = np.squeeze(raw_data)
-        if raw_data.ndim != 2:
-            raise ValueError(f"Expected 2D slice [lat, lon], got shape {raw_data.shape}")
+        raw_data = read_rectilinear_slice(ds, da, self._lat_name, self._lon_name,
+                                          self._time_name, time_index)
 
         lat_arr = np.asarray(ds[self._lat_name].values)
         lon_arr = np.asarray(ds[self._lon_name].values)
@@ -318,6 +297,7 @@ class NetCDFReader(BaseScientificReader):
             matched_lon=m_lon,
             grid_index_y=y_idx,
             grid_index_x=x_idx,
+            cell_bounds=cell_bounds(frame.lat_coords, frame.lon_coords, y_idx, x_idx),
             value=float(val) if is_valid else None,
             is_valid=is_valid,
             timestamp=frame.timestamp,

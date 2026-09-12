@@ -1,78 +1,34 @@
-"""
-Playback Manager and Prefetching Engine for YARA.
-Coordinates pre-rendering and buffer management for high-speed playback.
-"""
-
-from typing import List, Optional
+"""Local playback reuses the renderer and includes all analysis options in cache keys."""
 import asyncio
-import logging
-
+from threading import RLock
 from ..data_sources.local.registry import registry
 from .local_processor import render_slice_to_png
 from .frame_cache import frame_cache
 
-logger = logging.getLogger(__name__)
-
 
 class PlaybackManager:
-    """Manages prefetching and high-speed frame access for playback."""
+    def __init__(self):
+        # netCDF/HDF libraries may not support concurrent access to the same handle.
+        self.lock = RLock()
 
-    def get_or_render_frame(
-        self,
-        dataset_id: str,
-        variable: Optional[str] = None,
-        time_index: int = 0,
-        colormap: Optional[str] = None,
-        min_val: Optional[float] = None,
-        max_val: Optional[float] = None
-    ) -> bytes:
-        reader = registry.get_reader(dataset_id)
-        var_name = variable or reader._dataset_info.default_variable
+    def revision(self, reader):
+        path = reader.file_path
+        files = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else [path]
+        return [(str(p.resolve()), p.stat().st_mtime_ns, p.stat().st_size) for p in files]
 
-        # Check cache
-        cached = frame_cache.get(dataset_id, var_name, time_index, colormap, min_val, max_val)
-        if cached:
-            return cached
+    def get_or_render_frame(self, dataset_id, variable=None, time_index=0, colormap=None,
+                            min_val=None, max_val=None, analysis=None):
+        with self.lock:
+            reader = registry.get_reader(dataset_id)
+            name = variable or reader._dataset_info.default_variable
+            revision = self.revision(reader)
+            cached = frame_cache.get(dataset_id, name, time_index, colormap, min_val, max_val, analysis, revision)
+            if cached is not None:
+                return cached
+            frame = reader.read_frame(name, time_index)
+            png = render_slice_to_png(frame, colormap, min_val, max_val, analysis)
+            frame_cache.put(dataset_id, name, time_index, png, colormap, min_val, max_val, analysis, revision)
+            return png
 
-        # Render on the fly
-        slice_data = reader.read_frame(var_name, time_index)
-        png_bytes = render_slice_to_png(slice_data, colormap_name=colormap, min_val=min_val, max_val=max_val)
-
-        # Store in cache
-        frame_cache.put(dataset_id, var_name, time_index, png_bytes, colormap, min_val, max_val)
-        return png_bytes
-
-    async def prefetch_range(
-        self,
-        dataset_id: str,
-        variable: Optional[str] = None,
-        start_index: int = 0,
-        count: int = 10,
-        colormap: Optional[str] = None,
-        min_val: Optional[float] = None,
-        max_val: Optional[float] = None
-    ) -> int:
-        """Prefetches up to `count` upcoming frames in background."""
-        reader = registry.get_reader(dataset_id)
-        var_name = variable or reader._dataset_info.default_variable
-        total_times = reader._dataset_info.time_axis.count
-
-        prefetched = 0
-        for idx in range(start_index, min(start_index + count, total_times)):
-            # If already cached, continue
-            if frame_cache.get(dataset_id, var_name, idx, colormap, min_val, max_val):
-                continue
-
-            try:
-                # Yield to event loop to avoid blocking
-                await asyncio.sleep(0.001)
-                self.get_or_render_frame(dataset_id, var_name, idx, colormap, min_val, max_val)
-                prefetched += 1
-            except Exception as e:
-                logger.warning(f"Error prefetching frame {idx} for {dataset_id}: {e}")
-
-        return prefetched
-
-
-# Global playback manager
-playback_manager = PlaybackManager()
+    async def prefetch_range(self, dataset_id, variable=None, start_index=0, count=10,
+                             colormap=None, min_val

@@ -132,6 +132,7 @@ class PointQueryResponse(BaseModel):
     matched_lon: float
     grid_index_y: int
     grid_index_x: int
+    cell_bounds: Optional[SpatialExtent] = None
     value: Optional[float] = None
     is_valid: bool = True
     timestamp: Optional[str] = None

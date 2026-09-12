@@ -1,231 +1,156 @@
-"""
-HDF5 Scientific Reader for YARA.
-Navigates groups and datasets using h5py with multidimensional coordinate extraction.
-"""
-
-from pathlib import Path
-from typing import Dict, List, Optional, Union, Tuple, Any
-import numpy as np
+"""HDF5 adapter: preserve native values, units, dimension scales and real time."""
+from typing import Optional
 import h5py
-
+import numpy as np
+from netCDF4 import num2date
 from .base_reader import BaseScientificReader
-from .common_model import (
-    DatasetFormat,
-    DatasetInfo,
-    VariableInfo,
-    VariableType,
-    CoordinateInfo,
-    TimeAxisInfo,
-    SpatialExtent,
-    SliceData,
-    PointQueryResponse
-)
-from .coordinate_utils import normalize_grid_to_wgs84, find_nearest_cell
+from .common_model import DatasetFormat, DatasetInfo, VariableInfo, TimeAxisInfo, SliceData, PointQueryResponse
+from .coordinate_utils import normalize_grid_to_wgs84, find_nearest_cell, cell_bounds
+from .time_utils import analyze_time_axis
 from .variable_detection import is_coordinate_or_metadata_var, pick_default_variable
 
-LAT_KEYS = ["lat", "latitude", "nav_lat", "lats"]
-LON_KEYS = ["lon", "longitude", "nav_lon", "lons"]
+
+def text(value):
+    return value.decode() if isinstance(value, bytes) else str(value)
 
 
 class HDF5Reader(BaseScientificReader):
-    """Reader for HDF5 scientific datasets."""
-
-    def __init__(self, file_path: Union[str, Path], dataset_id: Optional[str] = None):
+    def __init__(self, file_path, dataset_id=None):
         super().__init__(file_path, dataset_id)
-        self._f: Optional[h5py.File] = None
-        self._lat_path: Optional[str] = None
-        self._lon_path: Optional[str] = None
+        self._f = None
+        self._paths = {}
+        self._axes = {}
+        self._time_axis = TimeAxisInfo(count=1)
 
-    def _open(self) -> h5py.File:
+    def _open(self):
         if self._f is None:
             self._f = h5py.File(str(self.file_path), "r")
         return self._f
 
-    def _find_datasets(self, group: h5py.Group, prefix: str = "") -> Dict[str, h5py.Dataset]:
-        results = {}
-        for k in group.keys():
-            item = group[k]
-            path = f"{prefix}/{k}" if prefix else k
-            if isinstance(item, h5py.Dataset):
-                results[path] = item
-            elif isinstance(item, h5py.Group):
-                results.update(self._find_datasets(item, path))
-        return results
+    def _find_datasets(self, group):
+        result = {}
+        group.visititems(lambda name, obj: result.update({name: obj}) if isinstance(obj, h5py.Dataset) else None)
+        return result
 
-    def inspect(self) -> DatasetInfo:
+    def _axis(self, ds, path):
+        if not path:
+            return None
+        basename = path.split("/")[-1].lower()
+        for i, dim in enumerate(ds.dims):
+            if dim.label.lower() == basename or any(scale.name.lstrip("/") == path for scale in dim.values()):
+                return i
+        return None
+
+    def inspect(self):
         f = self._open()
         datasets = self._find_datasets(f)
-
-        # Locate coordinates
-        for path, ds in datasets.items():
-            name_lower = path.split("/")[-1].lower()
-            if not self._lat_path and name_lower in LAT_KEYS:
-                self._lat_path = path
-            if not self._lon_path and name_lower in LON_KEYS:
-                self._lon_path = path
-
+        def locate(names, standard):
+            return next((p for p, d in datasets.items() if p.split("/")[-1].lower() in names
+                         or text(d.attrs.get("standard_name", "")).lower() == standard), None)
+        self._lat_path = locate({"lat", "latitude", "nav_lat", "lats"}, "latitude")
+        self._lon_path = locate({"lon", "longitude", "nav_lon", "lons"}, "longitude")
+        self._time_path = locate({"time", "datetime", "times"}, "time")
         if not self._lat_path or not self._lon_path:
-            # Look for 2D/1D datasets with lat/lon in name
-            for path, ds in datasets.items():
-                if "lat" in path.lower() and not self._lat_path:
-                    self._lat_path = path
-                if "lon" in path.lower() and not self._lon_path:
-                    self._lon_path = path
-
-        if not self._lat_path or not self._lon_path:
-            raise ValueError(f"Could not automatically locate latitude/longitude arrays in HDF5: {self.file_path.name}")
-
-        lat_arr = np.asarray(f[self._lat_path][()], dtype=np.float32).ravel()
-        lon_arr = np.asarray(f[self._lon_path][()], dtype=np.float32).ravel()
-
-        variables_info: Dict[str, VariableInfo] = {}
+            raise ValueError("HDF5 file lacks identifiable latitude/longitude coordinates")
+        lat, lon = np.asarray(f[self._lat_path][()]), np.asarray(f[self._lon_path][()])
+        if lat.ndim != 1 or lon.ndim != 1:
+            raise ValueError("HDF5 reader requires one-dimensional rectilinear coordinates")
+        if self._time_path:
+            time = f[self._time_path]
+            values = np.atleast_1d(time[()])
+            units = text(time.attrs.get("units", ""))
+            if "since" in units:
+                values = num2date(values, units, calendar=text(time.attrs.get("calendar", "standard")))
+            elif values.dtype.kind in "SUO":
+                values = [text(v) for v in values]
+            else:
+                # No epoch may be inferred from numeric values without metadata.
+                values = []
+            if len(values):
+                self._time_axis = analyze_time_axis(values, self._time_path)
+        variables = {}
+        max_frames = 1
         for path, ds in datasets.items():
-            if path in (self._lat_path, self._lon_path):
+            if path in (self._lat_path, self._lon_path, self._time_path) or ds.ndim < 2:
                 continue
             if is_coordinate_or_metadata_var(path.split("/")[-1]):
                 continue
-            if ds.ndim < 2:
-                continue
-
-            var_name = path.replace("/", "_")
-            shape = list(ds.shape)
-            fill_val = ds.attrs.get("_FillValue") or ds.attrs.get("missing_value")
-
-            variables_info[var_name] = VariableInfo(
-                name=var_name,
-                standard_name=str(ds.attrs.get("standard_name", "")),
-                long_name=str(ds.attrs.get("long_name", path)),
-                units=str(ds.attrs.get("units", "")),
-                dimensions=[f"dim_{i}" for i in range(len(shape))],
-                shape=shape,
-                dtype=str(ds.dtype),
-                var_type=VariableType.SCALAR_GRID,
-                fill_value=float(fill_val) if fill_val is not None else None,
-                aliases=[path.split("/")[-1]]
-            )
-
-        data_sample = np.zeros((len(lat_arr), len(lon_arr)), dtype=np.float32)
-        _, _, _, extent = normalize_grid_to_wgs84(data_sample, lat_arr, lon_arr)
-        default_var = pick_default_variable(variables_info)
-
-        file_size = 0
-        try:
-            file_size = self.file_path.stat().st_size
-        except Exception:
-            pass
-
-        self._dataset_info = DatasetInfo(
-            id=self.dataset_id,
-            name=self.file_path.name,
-            format=DatasetFormat.HDF5,
-            source_type="local",
-            file_path=str(self.file_path.resolve()),
-            file_size_bytes=file_size,
-            dimensions={"lat": len(lat_arr), "lon": len(lon_arr)},
-            coordinates={},
-            variables=variables_info,
-            default_variable=default_var,
-            time_axis=TimeAxisInfo(timestamps=["static"], resolution="single", count=1),
-            spatial_extent=extent,
-            metadata={"num_datasets": len(datasets)}
-        )
+            y, x = self._axis(ds, self._lat_path), self._axis(ds, self._lon_path)
+            if y is None or x is None:
+                # Conventional unlabelled HDF grids use trailing [latitude, longitude].
+                if ds.shape[-2:] == (len(lat), len(lon)):
+                    y, x = ds.ndim - 2, ds.ndim - 1
+                elif ds.shape[-2:] == (len(lon), len(lat)):
+                    x, y = ds.ndim - 2, ds.ndim - 1
+                else:
+                    continue
+            t = self._axis(ds, self._time_path)
+            if t is None and self._time_path and ds.ndim > 2:
+                candidates = [i for i, n in enumerate(ds.shape) if i not in (y, x) and n == f[self._time_path].size]
+                if len(candidates) == 1:
+                    t = candidates[0]
+            name = path.replace("/", "_")
+            if name in self._paths:
+                raise ValueError("HDF5 variable names collide after group normalization")
+            self._paths[name], self._axes[name] = path, (y, x, t)
+            count = ds.shape[t] if t is not None else 1
+            max_frames = max(max_frames, count)
+            fill = ds.attrs.get("_FillValue", ds.attrs.get("missing_value"))
+            variables[name] = VariableInfo(name=name, long_name=text(ds.attrs.get("long_name", path)),
+                standard_name=text(ds.attrs.get("standard_name", "")), units=text(ds.attrs.get("units", "")),
+                shape=list(ds.shape), dimensions=[ds.dims[i].label or f"dim_{i}" for i in range(ds.ndim)],
+                dtype=str(ds.dtype), fill_value=float(fill) if fill is not None else None,
+                has_time=t is not None, aliases=[path.split("/")[-1]])
+        if not variables:
+            raise ValueError("No rectilinear spatial variables found in HDF5 file")
+        if not self._time_axis.timestamps:
+            self._time_axis = TimeAxisInfo(count=max_frames, resolution="irregular" if max_frames > 1 else "single")
+        _, _, _, extent = normalize_grid_to_wgs84(np.zeros((len(lat), len(lon))), lat, lon)
+        self._dataset_info = DatasetInfo(id=self.dataset_id, name=self.file_path.name, format=DatasetFormat.HDF5,
+            file_path=str(self.file_path.resolve()), file_size_bytes=self.file_path.stat().st_size,
+            dimensions={"lat": len(lat), "lon": len(lon)}, variables=variables,
+            default_variable=pick_default_variable(variables), time_axis=self._time_axis, spatial_extent=extent)
         return self._dataset_info
 
-    def read_frame(
-        self,
-        var_name: Optional[str] = None,
-        time_index: int = 0
-    ) -> SliceData:
-        if not self._dataset_info:
+    def read_frame(self, var_name: Optional[str] = None, time_index: int = 0):
+        if self._dataset_info is None:
             self.inspect()
-
+        name = var_name or self._dataset_info.default_variable
+        if name not in self._paths:
+            raise ValueError(f"HDF5 variable '{name}' not found")
         f = self._open()
-        target_var = var_name or self._dataset_info.default_variable
-        # Resolve path
-        ds_path = target_var.replace("_", "/")
-        if ds_path not in f:
-            # Search by name
-            for k in self._dataset_info.variables.keys():
-                if k == target_var:
-                    ds_path = k.replace("_", "/")
-                    break
+        ds = f[self._paths[name]]
+        y, x, t = self._axes[name]
+        if not 0 <= time_index < (ds.shape[t] if t is not None else 1):
+            raise ValueError("Time index outside variable time axis")
+        index = [slice(None) if i in (y, x) else (time_index if i == t else 0) for i in range(ds.ndim)]
+        raw = np.array(ds[tuple(index)], dtype=float, copy=True)
+        if x < y:
+            raw = raw.T
+        meta = self._dataset_info.variables[name]
+        if meta.fill_value is not None:
+            raw[raw == meta.fill_value] = np.nan
+        raw = raw * float(ds.attrs.get("scale_factor", 1)) + float(ds.attrs.get("add_offset", 0))
+        raw[~np.isfinite(raw)] = np.nan
+        data, lat, lon, extent = normalize_grid_to_wgs84(raw, f[self._lat_path][()], f[self._lon_path][()])
+        valid = data[np.isfinite(data)]
+        stamps = self._time_axis.timestamps
+        return SliceData(data=data, lat_coords=lat, lon_coords=lon, extent=extent, variable_name=name,
+            timestamp=stamps[time_index] if time_index < len(stamps) else None, time_index=time_index,
+            units=meta.units, min_val=float(valid.min()) if valid.size else 0,
+            max_val=float(valid.max()) if valid.size else 1, mask=~np.isfinite(data))
 
-        dset = f.get(ds_path)
-        if dset is None:
-            # Fallback search
-            for p in f:
-                if target_var in p:
-                    dset = f[p]
-                    break
-
-        if dset is None:
-            raise ValueError(f"HDF5 dataset '{target_var}' not found.")
-
-        # Slice 2D
-        raw_data = np.asarray(dset[()], dtype=np.float32)
-        while raw_data.ndim > 2:
-            raw_data = raw_data[0]
-
-        lat_arr = np.asarray(f[self._lat_path][()], dtype=np.float32).ravel()
-        lon_arr = np.asarray(f[self._lon_path][()], dtype=np.float32).ravel()
-
-        norm_data, norm_lat, norm_lon, extent = normalize_grid_to_wgs84(
-            raw_data, lat_arr, lon_arr
-        )
-
-        mask = np.isnan(norm_data)
-        valid = norm_data[~mask]
-        min_val = float(np.min(valid)) if len(valid) > 0 else 0.0
-        max_val = float(np.max(valid)) if len(valid) > 0 else 1.0
-
-        return SliceData(
-            data=norm_data,
-            lat_coords=norm_lat,
-            lon_coords=norm_lon,
-            extent=extent,
-            variable_name=target_var,
-            timestamp=None,
-            time_index=0,
-            units=None,
-            min_val=min_val,
-            max_val=max_val,
-            mask=mask
-        )
-
-    def get_point_value(
-        self,
-        lat: float,
-        lon: float,
-        var_name: Optional[str] = None,
-        time_index: int = 0
-    ) -> PointQueryResponse:
-        frame = self.read_frame(var_name=var_name, time_index=time_index)
-        y_idx, x_idx, m_lat, m_lon = find_nearest_cell(
-            lat, lon, frame.lat_coords, frame.lon_coords
-        )
-        val = frame.data[y_idx, x_idx]
-        is_valid = bool(np.isfinite(val) and not frame.mask[y_idx, x_idx])
-
-        return PointQueryResponse(
-            dataset_id=self.dataset_id,
-            variable=frame.variable_name,
-            units=frame.units,
-            requested_lat=lat,
-            requested_lon=lon,
-            matched_lat=m_lat,
-            matched_lon=m_lon,
-            grid_index_y=y_idx,
-            grid_index_x=x_idx,
-            value=float(val) if is_valid else None,
-            is_valid=is_valid,
-            timestamp=frame.timestamp,
-            time_index=time_index
-        )
+    def get_point_value(self, lat, lon, var_name=None, time_index=0):
+        frame = self.read_frame(var_name, time_index)
+        y, x, mlat, mlon = find_nearest_cell(lat, lon, frame.lat_coords, frame.lon_coords)
+        value = frame.data[y, x]
+        valid = bool(np.isfinite(value) and not frame.mask[y, x])
+        return PointQueryResponse(dataset_id=self.dataset_id, variable=frame.variable_name, units=frame.units,
+            requested_lat=lat, requested_lon=lon, matched_lat=mlat, matched_lon=mlon,
+            grid_index_y=y, grid_index_x=x, cell_bounds=cell_bounds(frame.lat_coords, frame.lon_coords, y, x),
+            value=float(value) if valid else None, is_valid=valid, timestamp=frame.timestamp, time_index=time_index)
 
     def close(self):
         if self._f is not None:
-            try:
-                self._f.close()
-            except Exception:
-                pass
+            self._f.close()
             self._f = None

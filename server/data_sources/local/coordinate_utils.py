@@ -58,11 +58,13 @@ def normalize_grid_to_wgs84(
         lat = lat[::-1]
         data = np.flipud(data)
 
-    # 3. Calculate spatial extent
-    west = float(np.nanmin(lon))
-    east = float(np.nanmax(lon))
-    south = float(np.nanmin(lat))
-    north = float(np.nanmax(lat))
+    # Raster extent is the outside cell edges, not the center coordinates.
+    lon_edges = coordinate_edges(lon, -180, 180)
+    lat_edges = coordinate_edges(lat, -90, 90)
+    west = float(np.min(lon_edges))
+    east = float(np.max(lon_edges))
+    south = float(np.min(lat_edges))
+    north = float(np.max(lat_edges))
 
     is_global = (east - west >= 355.0) and (north - south >= 160.0)
     if is_global:
@@ -108,3 +110,65 @@ def find_nearest_cell(
     matched_lon = float(lon_coords[x_idx])
 
     return y_idx, x_idx, matched_lat, matched_lon
+
+
+def coordinate_edges(coords, lower, upper):
+    """Midpoint-derived cell edges, preserving ascending/descending index order.
+
+    A singleton axis has no measurable resolution; its center is returned as
+    both edges rather than inventing a scientific cell size.
+    """
+    coords = np.asarray(coords, dtype=float)
+    if coords.ndim != 1 or not coords.size or not np.all(np.isfinite(coords)):
+        raise ValueError("Finite one-dimensional rectilinear coordinates are required")
+    if coords.size == 1:
+        return np.array([coords[0], coords[0]])
+    diffs = np.diff(coords)
+    if not (np.all(diffs > 0) or np.all(diffs < 0)):
+        raise ValueError("Coordinates must be strictly monotonic")
+    edges = np.concatenate(([coords[0] - diffs[0] / 2], (coords[:-1] + coords[1:]) / 2,
+                            [coords[-1] + diffs[-1] / 2]))
+    return np.clip(edges, lower, upper)
+
+
+def cell_bounds(lat, lon, y, x):
+    ys, xs = coordinate_edges(lat, -90, 90), coordinate_edges(lon, -180, 180)
+    return SpatialExtent(south=float(min(ys[y:y + 2])), north=float(max(ys[y:y + 2])),
+                         west=float(min(xs[x:x + 2])), east=float(max(xs[x:x + 2])))
+
+
+def grid_metadata(frame):
+    lat, lon = frame.lat_coords, frame.lon_coords
+    ys, xs = coordinate_edges(lat, -90, 90), coordinate_edges(lon, -180, 180)
+    dy, dx = np.abs(np.diff(lat)), np.abs(np.diff(lon))
+    native = bool(dy.size and dx.size and np.allclose(dy, 1, atol=0.01, rtol=0)
+                  and np.allclose(dx, 1, atol=0.01, rtol=0))
+    extent = SpatialExtent(south=float(min(ys)), north=float(max(ys)),
+                           west=float(min(xs)), east=float(max(xs)))
+    return {
+        "kind": "native" if native else "reference",
+        "latitude_resolution": float(np.median(dy)) if dy.size else None,
+        "longitude_resolution": float(np.median(dx)) if dx.size else None,
+        "extent": extent.model_dump(),
+        "latitudes": sorted(ys.tolist()) if native else np.arange(np.ceil(extent.south), np.floor(extent.north) + 1).tolist(),
+        "longitudes": sorted(xs.tolist()) if native else np.arange(np.ceil(extent.west), np.floor(extent.east) + 1).tolist(),
+    }
+
+
+def read_rectilinear_slice(ds, da, lat_name, lon_name, time_name, time_index):
+    """Slice by actual dimension names and transpose before coordinate normalization."""
+    lat, lon = ds[lat_name], ds[lon_name]
+    if lat.ndim != 1 or lon.ndim != 1:
+        raise ValueError("Curvilinear coordinates require a dedicated regridding adapter")
+    ydim, xdim = lat.dims[0], lon.dims[0]
+    if ydim == xdim or ydim not in da.dims or xdim not in da.dims:
+        raise ValueError("Variable does not contain both spatial dimensions")
+    tdim = ds[time_name].dims[0] if time_name and ds[time_name].dims else None
+    indexer = {d: 0 for d in da.dims if d not in (ydim, xdim)}
+    if tdim in da.dims:
+        if not 0 <= time_index < da.sizes[tdim]:
+            raise ValueError("Time index outside dataset time axis")
+        indexer[tdim] = time_index
+    elif time_index != 0:
+        raise ValueError("This variable has only one frame")
+    return np.array(da.isel(indexer).transpose(ydim, xdim).values, dtype=np.float32, copy=True)
