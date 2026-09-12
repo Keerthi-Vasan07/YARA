@@ -4,6 +4,7 @@
  */
 
 import { useState } from 'react';
+import { LocalAnalysisControls, LocalAnalysisControlsProps } from './LocalAnalysisControls';
 import {
   Box,
   Typography,
@@ -39,6 +40,7 @@ const THRESHOLD_PRESETS = [
 ];
 
 interface ColorScaleControlsProps {
+  localAnalysis?: LocalAnalysisControlsProps;
   minTemp: number;
   maxTemp: number;
   colormap: string;
@@ -56,6 +58,7 @@ interface ColorScaleControlsProps {
 }
 
 export function ColorScaleControls({
+  localAnalysis,
   minTemp,
   maxTemp,
   colormap,
@@ -71,6 +74,7 @@ export function ColorScaleControls({
   onThresholdMaxChange,
 }: ColorScaleControlsProps) {
   const [_showThresholds, _setShowThresholds] = useState(false);
+  if (localAnalysis) return <LocalAnalysisControls {...localAnalysis} bottomOffset={bottomOffset} />;
   
   const handleReset = () => {
     onMinTempChange(DEFAULT_MIN);

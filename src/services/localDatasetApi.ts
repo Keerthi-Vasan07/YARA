@@ -2,7 +2,7 @@
  * API client for YARA Local Scientific Dataset endpoints.
  */
 
-import { DatasetInfo, ActiveModeResponse, LocalPointQueryResponse } from '../types/dataset';
+import { DatasetInfo, ActiveModeResponse, LocalPointQueryResponse, AnalysisOptions, FrameStyle, FrameStats, DatasetGrid } from '../types/dataset';
 
 const BASE_URL = '/api/local-dataset';
 
@@ -100,7 +100,8 @@ export function getLocalFrameUrl(
   time?: string,
   colormap?: string,
   minVal?: number,
-  maxVal?: number
+  maxVal?: number,
+  analysis?: AnalysisOptions
 ): string {
   const params = new URLSearchParams();
   if (variable) params.set('variable', variable);
@@ -109,6 +110,7 @@ export function getLocalFrameUrl(
   if (colormap) params.set('colormap', colormap);
   if (minVal !== undefined) params.set('min_val', String(minVal));
   if (maxVal !== undefined) params.set('max_val', String(maxVal));
+  if (analysis) params.set('analysis', JSON.stringify(analysis));
 
   return `${BASE_URL}/${encodeURIComponent(datasetId)}/frame?${params.toString()}`;
 }
@@ -138,13 +140,18 @@ export async function prefetchLocalFrames(
   datasetId: string,
   variable?: string,
   startIndex: number = 0,
-  count: number = 10
+  count: number = 10,
+  style?: FrameStyle
 ): Promise<{ status: string; prefetched_count: number }> {
   const params = new URLSearchParams({
     start_index: String(startIndex),
     count: String(count),
   });
   if (variable) params.set('variable', variable);
+  if (style?.analysis) params.set('analysis', JSON.stringify(style.analysis));
+  if (style?.colormap) params.set('colormap', style.colormap);
+  if (style?.minVal !== undefined) params.set('min_val', String(style.minVal));
+  if (style?.maxVal !== undefined) params.set('max_val', String(style.maxVal));
 
   const res = await fetch(`${BASE_URL}/${encodeURIComponent(datasetId)}/prefetch?${params.toString()}`, {
     method: 'POST',
@@ -152,3 +159,22 @@ export async function prefetchLocalFrames(
   if (!res.ok) throw new Error('Failed to trigger prefetching');
   return res.json();
 }
+
+async function localJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(typeof body.detail === 'string' ? body.detail : `Dataset request failed (${response.status})`);
+  }
+  return response.json();
+}
+
+export function fetchLocalStats(datasetId: string, variable: string, index: number, style: FrameStyle, signal?: AbortSignal): Promise<FrameStats> {
+  const frameUrl = getLocalFrameUrl(datasetId, variable, index, undefined, style.colormap, style.minVal, style.maxVal, style.analysis);
+  return localJson(frameUrl.replace('/frame?', '/frame/stats?'), signal);
+}
+
+export function fetchLocalGrid(datasetId: string, variable: string, signal?: AbortSignal): Promise<DatasetGrid> {
+  return localJson(`${BASE_URL}/${encodeURIComponent(datasetId)}/grid?${new URLSearchParams({ variable })}`, signal);
+}
+

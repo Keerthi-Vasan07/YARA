@@ -8,6 +8,7 @@ import RepeatIcon from '@mui/icons-material/Repeat';
 import SpeedIcon from '@mui/icons-material/Speed';
 
 import { PlaybackSpeed } from '../../types/playback';
+import { FrameStyle } from '../../types/dataset';
 import { prefetchLocalFrames } from '../../services/localDatasetApi';
 
 interface PlaybackControlsProps {
@@ -17,6 +18,8 @@ interface PlaybackControlsProps {
   datasetId?: string;
   variable?: string;
   resolution?: string;
+  frameStyle?: FrameStyle;
+  frameCount?: number;
 }
 
 export function PlaybackControls({
@@ -26,21 +29,23 @@ export function PlaybackControls({
   datasetId,
   variable,
   resolution,
+  frameStyle,
+  frameCount,
 }: PlaybackControlsProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState<PlaybackSpeed>(1);
   const [loop, setLoop] = useState(true);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const totalFrames = timestamps.length;
+  const totalFrames = frameCount ?? timestamps.length;
   const isMultiFrame = totalFrames > 1;
 
   // Trigger prefetch when index changes during playback
   useEffect(() => {
     if (datasetId && isPlaying && totalFrames > 1) {
-      prefetchLocalFrames(datasetId, variable, currentIndex, 10).catch(() => {});
+      prefetchLocalFrames(datasetId, variable, currentIndex, 3, frameStyle).catch(console.warn);
     }
-  }, [currentIndex, isPlaying, datasetId, variable, totalFrames]);
+  }, [currentIndex, isPlaying, datasetId, variable, totalFrames, frameStyle]);
 
   const currentIndexRef = useRef(currentIndex);
   currentIndexRef.current = currentIndex;
