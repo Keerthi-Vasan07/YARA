@@ -104,8 +104,49 @@ export interface LocalPointQueryResponse {
   matched_lon: number;
   grid_index_y: number;
   grid_index_x: number;
+  cell_bounds?: SpatialExtent | null;
   value?: number | null;
   is_valid: boolean;
   timestamp?: string | null;
   time_index?: number | null;
 }
+
+export interface GradientStop { position: number; color: string }
+export interface AnalysisOptions {
+  mode: 'none' | 'exact' | 'range';
+  exact_temperature: number;
+  tolerance: number;
+  range_min: number;
+  range_max: number;
+  flat_color: string;
+  stops: GradientStop[] | null;
+}
+export interface FrameStyle {
+  analysis?: AnalysisOptions;
+  colormap?: string;
+  minVal?: number;
+  maxVal?: number;
+}
+export interface FrameStats {
+  variable: string;
+  units: string | null;
+  timestamp: string | null;
+  time_index: number;
+  matching_cells: number;
+  valid_cells: number;
+  total_cells: number;
+  matching_percent: number;
+  min: number | null;
+  max: number | null;
+  mean: number | null;
+  message: string | null;
+}
+export interface DatasetGrid {
+  kind: 'native' | 'reference';
+  latitude_resolution: number | null;
+  longitude_resolution: number | null;
+  extent: SpatialExtent;
+  latitudes: number[];
+  longitudes: number[];
+}
+
