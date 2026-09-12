@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback, useImperativeHandle, forwardRef, useState } from 'react';
 import * as Cesium from 'cesium';
-import { DatasetInfo } from '../types/dataset';
+import { DatasetInfo, AnalysisOptions } from '../types/dataset';
+import { getLocalFrameUrl } from '../services/localDatasetApi';
+import { GridOverlay } from './GridOverlay';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 
 // Default global SST bounds (fallback if tilejson fails)
@@ -75,6 +77,8 @@ interface CesiumViewerProps {
   activeDataset?: DatasetInfo | null;
   localVariable?: string;
   localTimeIndex?: number;
+  localAnalysis?: AnalysisOptions;
+  localGridEnabled?: boolean;
   colormap?: string;
 }
 
@@ -251,7 +255,7 @@ function createPulseCircle(): HTMLCanvasElement {
 }
 
 export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
-  function CesiumViewer({ selectedDate, isLoading, initialBasemap = 'satellite', onMapClick, clickedPosition, colorScaleMin = -2, colorScaleMax = 35, drawingMode: _drawingMode = false, onBboxDrawn, activeVariable: _activeVariable = 'sst', visibleLayers = ['sst'], initialCamera, onCameraChange, availableDates: _availableDates, thresholdEnabled: _thresholdEnabled = false, thresholdMin: _thresholdMin = null, thresholdMax: _thresholdMax = null, activeMode = 'online', activeDataset = null, localVariable, localTimeIndex = 0, colormap }, ref) {
+  function CesiumViewer({ selectedDate, isLoading, initialBasemap = 'satellite', onMapClick, clickedPosition, colorScaleMin = -2, colorScaleMax = 35, drawingMode: _drawingMode = false, onBboxDrawn, activeVariable: _activeVariable = 'sst', visibleLayers = ['sst'], initialCamera, onCameraChange, availableDates: _availableDates, thresholdEnabled: _thresholdEnabled = false, thresholdMin: _thresholdMin = null, thresholdMax: _thresholdMax = null, activeMode = 'online', activeDataset = null, localVariable, localTimeIndex = 0, colormap, localAnalysis, localGridEnabled = false }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const sstLayerRef = useRef<Cesium.ImageryLayer | null>(null);
@@ -767,19 +771,15 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
     // Local Dataset Mode: Render local dataset frame using actual spatial extent
     if (activeMode === 'local' && activeDataset && viewer && !viewer.isDestroyed()) {
       const varToRender = localVariable || activeDataset.default_variable || Object.keys(activeDataset.variables)[0] || 'data';
-      const requestKey = `local:${activeDataset.id}:${varToRender}:${localTimeIndex}:${colorScaleMin}:${colorScaleMax}:${colormap || ''}`;
+      const imageUrl = getLocalFrameUrl(activeDataset.id, varToRender, localTimeIndex, undefined,
+        colormap, colorScaleMin, colorScaleMax, localAnalysis);
+      const requestKey = imageUrl;
       
       if (lastSstRequestRef.current === requestKey && dataLayersRef.current.has('local')) {
         return;
       }
 
-      // Remove existing data layers
-      for (const [_layerId, layer] of dataLayersRef.current) {
-        viewer.imageryLayers.remove(layer);
-      }
-      dataLayersRef.current.clear();
-
-      const imageUrl = `/api/local-dataset/${encodeURIComponent(activeDataset.id)}/frame?variable=${encodeURIComponent(varToRender)}&time_index=${localTimeIndex}&min_val=${colorScaleMin}&max_val=${colorScaleMax}&colormap=${colormap || ''}`;
+      // Keep the previous frame visible until the replacement is loaded.
       const ext = activeDataset.spatial_extent;
 
       try {
@@ -793,6 +793,8 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
         });
 
         if (viewer && !viewer.isDestroyed() && !abortController.signal.aborted) {
+          for (const layer of dataLayersRef.current.values()) viewer.imageryLayers.remove(layer);
+          dataLayersRef.current.clear();
           const layer = viewer.imageryLayers.addImageryProvider(provider);
           layer.show = true;
           layer.alpha = 1.0;
@@ -919,7 +921,7 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
     if (viewer && !viewer.isDestroyed()) {
       viewer.scene.requestRender();
     }
-  }, [raiseLabelsToTop, activeMode, activeDataset, localVariable, localTimeIndex, colorScaleMin, colorScaleMax, colormap]);
+  }, [raiseLabelsToTop, activeMode, activeDataset, localVariable, localTimeIndex, colorScaleMin, colorScaleMax, colormap, localAnalysis]);
 
   // Update layers when date, color scale, visibleLayers, or local dataset changes
   const prevDateRef = useRef<string>('');
@@ -931,7 +933,7 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
     if (!viewer || viewer.isDestroyed()) return;
 
     if (activeMode === 'local') {
-      const localKey = `${activeDataset?.id}:${localVariable}:${localTimeIndex}:${colorScaleMin}:${colorScaleMax}:${colormap}`;
+      const localKey = `${activeDataset?.id}:${localVariable}:${localTimeIndex}:${colorScaleMin}:${colorScaleMax}:${colormap}:${JSON.stringify(localAnalysis)}`;
       if (prevLocalKeyRef.current !== localKey) {
         prevLocalKeyRef.current = localKey;
         updateDataLayers(selectedDate, visibleLayers);
@@ -939,6 +941,8 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
       return;
     }
 
+    // Reset local deduplication when switching back to online mode.
+    prevLocalKeyRef.current = '';
     if (!selectedDate || isLoading) return;
     
     // Clear all layers if date changed
@@ -961,9 +965,13 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
     }
     
     updateDataLayers(selectedDate, visibleLayers);
-  }, [selectedDate, isLoading, updateDataLayers, visibleLayers, activeMode, activeDataset, localVariable, localTimeIndex, colorScaleMin, colorScaleMax, colormap]);
+    return () => layerUpdateAbortRef.current?.abort();
+  }, [selectedDate, isLoading, updateDataLayers, visibleLayers, activeMode, activeDataset, localVariable, localTimeIndex, colorScaleMin, colorScaleMax, colormap, localAnalysis, viewerInitialized]);
 
   return (
+    <>
+    {viewerInitialized && viewerRef.current && activeMode === 'local' && activeDataset && localGridEnabled &&
+      <GridOverlay viewer={viewerRef.current} datasetId={activeDataset.id} variable={localVariable || activeDataset.default_variable || ''} />}
     <div 
       ref={containerRef} 
       style={{ 
@@ -973,6 +981,7 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
         height: '100%',
       }}
     />
+    </>
   );
 });
 
