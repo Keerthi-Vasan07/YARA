@@ -31,4 +31,18 @@ class PlaybackManager:
             return png
 
     async def prefetch_range(self, dataset_id, variable=None, start_index=0, count=10,
-                             colormap=None, min_val
+                             colormap=None, min_val=None, max_val=None, analysis=None):
+        reader = registry.get_reader(dataset_id)
+        name = variable or reader._dataset_info.default_variable
+        total = reader._dataset_info.time_axis.count
+        if not reader._dataset_info.variables[name].has_time:
+            total = 1
+        prefetched = 0
+        for index in range(start_index, min(start_index + count, total)):
+            await asyncio.to_thread(self.get_or_render_frame, dataset_id, name, index,
+                                    colormap, min_val, max_val, analysis)
+            prefetched += 1
+        return prefetched
+
+
+playback_manager = PlaybackManager()

@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 import shutil
 import logging
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Response
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Response, Depends
+from pydantic import ValidationError
+from ...pipeline.gradient_colormap import AnalysisOptions, analyze_slice
+from ...data_sources.local.coordinate_utils import grid_metadata
 from fastapi.responses import Response
 
 from ...data_sources.local.registry import registry
@@ -139,6 +142,55 @@ def get_times(dataset_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+def analysis_options(analysis: Optional[str] = Query(None, max_length=10000)):
+    try:
+        return AnalysisOptions.model_validate_json(analysis) if analysis is not None else AnalysisOptions()
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def resolve_request(dataset_id, variable, time_index, time=None):
+    try:
+        reader = registry.get_reader(dataset_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    info = reader._dataset_info
+    variable = variable or info.default_variable
+    if variable not in info.variables:
+        raise HTTPException(status_code=422, detail="Variable not found in dataset")
+    if time is not None:
+        if time not in info.time_axis.timestamps:
+            raise HTTPException(status_code=422, detail="Timestamp not found; use an exact value from /times")
+        time_index = info.time_axis.timestamps.index(time)
+    count = max(1, info.time_axis.count) if info.variables[variable].has_time else 1
+    if not 0 <= time_index < count:
+        raise HTTPException(status_code=422, detail="Time index outside variable time axis")
+    return reader, variable, time_index
+
+
+@router.get("/{dataset_id}/frame/stats")
+def get_frame_stats(dataset_id: str, variable: Optional[str] = None,
+                    time_index: int = Query(0, ge=0), time: Optional[str] = None,
+                    options: AnalysisOptions = Depends(analysis_options)):
+    reader, variable, time_index = resolve_request(dataset_id, variable, time_index, time)
+    try:
+        with playback_manager.lock:
+            frame = reader.read_frame(variable, time_index)
+            return analyze_slice(frame, options)[2]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/{dataset_id}/grid")
+def get_grid(dataset_id: str, variable: Optional[str] = None, time_index: int = Query(0, ge=0)):
+    reader, variable, time_index = resolve_request(dataset_id, variable, time_index)
+    try:
+        with playback_manager.lock:
+            return grid_metadata(reader.read_frame(variable, time_index))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/{dataset_id}/frame")
 def get_frame(
     dataset_id: str,
@@ -147,25 +199,15 @@ def get_frame(
     time: Optional[str] = Query(None, description="Optional ISO timestamp"),
     colormap: Optional[str] = Query(None, description="Colormap name"),
     min_val: Optional[float] = Query(None, description="Minimum color scale value"),
-    max_val: Optional[float] = Query(None, description="Maximum color scale value")
+    max_val: Optional[float] = Query(None, description="Maximum color scale value", allow_inf_nan=False),
+    options: AnalysisOptions = Depends(analysis_options)
 ):
     """
     Renders and streams a transparent RGBA PNG image for Cesium visualization.
     Uses two-tier caching for zero-latency frame playback.
     """
     try:
-        reader = registry.get_reader(dataset_id)
-        # If ISO timestamp provided, find matching index
-        if time and reader._dataset_info.time_axis.timestamps:
-            ts_list = reader._dataset_info.time_axis.timestamps
-            if time in ts_list:
-                time_index = ts_list.index(time)
-            else:
-                # Partial match by date
-                for i, ts in enumerate(ts_list):
-                    if ts.startswith(time[:10]):
-                        time_index = i
-                        break
+        reader, variable, time_index = resolve_request(dataset_id, variable, time_index, time)
 
         png_bytes = playback_manager.get_or_render_frame(
             dataset_id=dataset_id,
@@ -173,19 +215,24 @@ def get_frame(
             time_index=time_index,
             colormap=colormap,
             min_val=min_val,
-            max_val=max_val
+            max_val=max_val,
+            analysis=options
         )
 
         return Response(
             content=png_bytes,
             media_type="image/png",
             headers={
-                "Cache-Control": "public, max-age=3600",
+                "Cache-Control": "no-cache",
                 "X-Dataset-ID": dataset_id,
                 "X-Time-Index": str(time_index),
                 "X-Variable": variable or reader._dataset_info.default_variable or ""
             }
         )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as e:
         logger.error(f"Error rendering frame for {dataset_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -204,23 +251,13 @@ def get_point(
     Queries exact data value and nearest grid coordinate cell for the clicked location on the globe.
     """
     try:
-        reader = registry.get_reader(dataset_id)
-        if time and reader._dataset_info.time_axis.timestamps:
-            ts_list = reader._dataset_info.time_axis.timestamps
-            if time in ts_list:
-                time_index = ts_list.index(time)
-            else:
-                for i, ts in enumerate(ts_list):
-                    if ts.startswith(time[:10]):
-                        time_index = i
-                        break
-
-        return reader.get_point_value(
-            lat=lat,
-            lon=lon,
-            var_name=variable,
-            time_index=time_index
-        )
+        reader, variable, time_index = resolve_request(dataset_id, variable, time_index, time)
+        with playback_manager.lock:
+            return reader.get_point_value(lat=lat, lon=lon, var_name=variable, time_index=time_index)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as e:
         logger.error(f"Point query error for {dataset_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -234,10 +271,12 @@ async def prefetch_frames(
     count: int = Query(10, ge=1, le=100),
     colormap: Optional[str] = Query(None),
     min_val: Optional[float] = Query(None),
-    max_val: Optional[float] = Query(None)
+    max_val: Optional[float] = Query(None, allow_inf_nan=False),
+    options: AnalysisOptions = Depends(analysis_options)
 ):
     """Asynchronously prefetches upcoming frames into the fast cache for smooth playback."""
     try:
+        resolve_request(dataset_id, variable, start_index)
         prefetched = await playback_manager.prefetch_range(
             dataset_id=dataset_id,
             variable=variable,
@@ -245,8 +284,13 @@ async def prefetch_frames(
             count=count,
             colormap=colormap,
             min_val=min_val,
-            max_val=max_val
+            max_val=max_val,
+            analysis=options
         )
         return {"status": "ok", "prefetched_count": prefetched}
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
