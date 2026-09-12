@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useImperativeHandle, forwardRef, useState } from 'react';
 import * as Cesium from 'cesium';
+import { DatasetInfo } from '../types/dataset';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 
 // Default global SST bounds (fallback if tilejson fails)
@@ -69,28 +70,40 @@ interface CesiumViewerProps {
   thresholdEnabled?: boolean;
   thresholdMin?: number | null;
   thresholdMax?: number | null;
+  // Local Dataset Support
+  activeMode?: 'online' | 'local';
+  activeDataset?: DatasetInfo | null;
+  localVariable?: string;
+  localTimeIndex?: number;
+  colormap?: string;
+}
+
+// Helper to get sanitized MapTiler API key
+function getMapTilerKey(): string {
+  const raw = import.meta.env.VITE_MAPTILER_API_KEY || '';
+  return raw.replace(/['"]/g, '').trim();
 }
 
 // Helper to create basemap layers (may return multiple for base + labels)
 async function createBasemapLayers(id: BasemapId, imageryLayers: Cesium.ImageryLayerCollection): Promise<Cesium.ImageryLayer[]> {
   const layers: Cesium.ImageryLayer[] = [];
+  const apiKey = getMapTilerKey();
   
   switch (id) {
     case 'satellite': {
-      // MapTiler Satellite (pure imagery, no labels baked in)
-      const apiKey = import.meta.env.VITE_MAPTILER_API_KEY;
+      // MapTiler Satellite v4 (official recommended provider: 512x512, level 0-20)
       const satelliteBase = new Cesium.UrlTemplateImageryProvider({
-        url: `https://api.maptiler.com/maps/satellite/{z}/{x}/{y}.jpg?key=${apiKey}`,
+        url: `https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${apiKey}`,
         credit: 'MapTiler',
+        minimumLevel: 0,
         maximumLevel: 20,
+        tileWidth: 512,
+        tileHeight: 512,
+      });
+      satelliteBase.errorEvent.addEventListener((err) => {
+        console.warn('MapTiler base imagery unavailable:', err);
       });
       layers.push(imageryLayers.addImageryProvider(satelliteBase, 0));
-      
-      // Add ESRI reference labels overlay (free, transparent background)
-      const satelliteLabels = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
-        'https://services.arcgisonline.com/arcgis/rest/services/Reference/World_Boundaries_and_Places/MapServer'
-      );
-      layers.push(imageryLayers.addImageryProvider(satelliteLabels, 1));
       break;
     }
     case 's2-cloudless': {
@@ -101,21 +114,20 @@ async function createBasemapLayers(id: BasemapId, imageryLayers: Cesium.ImageryL
         maximumLevel: 15,
       });
       layers.push(imageryLayers.addImageryProvider(s2Cloudless, 0));
-      
-      // Add ESRI reference labels overlay (free, transparent background)
-      const labelsRef = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
-        'https://services.arcgisonline.com/arcgis/rest/services/Reference/World_Boundaries_and_Places/MapServer'
-      );
-      layers.push(imageryLayers.addImageryProvider(labelsRef, 1));
       break;
     }
     case 'ocean': {
       // MapTiler Ocean style (bathymetry with clean labels)
-      const apiKey = import.meta.env.VITE_MAPTILER_API_KEY;
       const oceanMap = new Cesium.UrlTemplateImageryProvider({
         url: `https://api.maptiler.com/maps/ocean/{z}/{x}/{y}.png?key=${apiKey}`,
         credit: 'MapTiler',
+        minimumLevel: 0,
         maximumLevel: 20,
+        tileWidth: 512,
+        tileHeight: 512,
+      });
+      oceanMap.errorEvent.addEventListener((err) => {
+        console.warn('MapTiler base imagery unavailable:', err);
       });
       layers.push(imageryLayers.addImageryProvider(oceanMap, 0));
       break;
@@ -135,44 +147,64 @@ async function createBasemapLayers(id: BasemapId, imageryLayers: Cesium.ImageryL
     }
     case 'light': {
       // MapTiler Light/Positron style
-      const apiKey = import.meta.env.VITE_MAPTILER_API_KEY;
       const lightMap = new Cesium.UrlTemplateImageryProvider({
         url: `https://api.maptiler.com/maps/streets-v2-light/{z}/{x}/{y}.png?key=${apiKey}`,
         credit: 'MapTiler',
+        minimumLevel: 0,
         maximumLevel: 20,
+        tileWidth: 512,
+        tileHeight: 512,
+      });
+      lightMap.errorEvent.addEventListener((err) => {
+        console.warn('MapTiler base imagery unavailable:', err);
       });
       layers.push(imageryLayers.addImageryProvider(lightMap, 0));
       break;
     }
     case 'streets': {
       // MapTiler Streets style
-      const apiKey = import.meta.env.VITE_MAPTILER_API_KEY;
       const streetsMap = new Cesium.UrlTemplateImageryProvider({
         url: `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${apiKey}`,
         credit: 'MapTiler',
+        minimumLevel: 0,
         maximumLevel: 20,
+        tileWidth: 512,
+        tileHeight: 512,
+      });
+      streetsMap.errorEvent.addEventListener((err) => {
+        console.warn('MapTiler base imagery unavailable:', err);
       });
       layers.push(imageryLayers.addImageryProvider(streetsMap, 0));
       break;
     }
     case 'dark': {
       // MapTiler Dark style
-      const apiKey = import.meta.env.VITE_MAPTILER_API_KEY;
       const darkMap = new Cesium.UrlTemplateImageryProvider({
         url: `https://api.maptiler.com/maps/streets-v2-dark/{z}/{x}/{y}.png?key=${apiKey}`,
         credit: 'MapTiler',
+        minimumLevel: 0,
         maximumLevel: 20,
+        tileWidth: 512,
+        tileHeight: 512,
+      });
+      darkMap.errorEvent.addEventListener((err) => {
+        console.warn('MapTiler base imagery unavailable:', err);
       });
       layers.push(imageryLayers.addImageryProvider(darkMap, 0));
       break;
     }
     default: {
-      // MapTiler Ocean fallback
-      const apiKey = import.meta.env.VITE_MAPTILER_API_KEY;
+      // MapTiler Satellite-v4 fallback
       const defaultMap = new Cesium.UrlTemplateImageryProvider({
-        url: `https://api.maptiler.com/maps/ocean/{z}/{x}/{y}.png?key=${apiKey}`,
+        url: `https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${apiKey}`,
         credit: 'MapTiler',
+        minimumLevel: 0,
         maximumLevel: 20,
+        tileWidth: 512,
+        tileHeight: 512,
+      });
+      defaultMap.errorEvent.addEventListener((err) => {
+        console.warn('MapTiler base imagery unavailable:', err);
       });
       layers.push(imageryLayers.addImageryProvider(defaultMap, 0));
     }
@@ -219,7 +251,7 @@ function createPulseCircle(): HTMLCanvasElement {
 }
 
 export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
-  function CesiumViewer({ selectedDate, isLoading, initialBasemap = 'satellite', onMapClick, clickedPosition, colorScaleMin = -2, colorScaleMax = 35, drawingMode: _drawingMode = false, onBboxDrawn, activeVariable: _activeVariable = 'sst', visibleLayers = ['sst'], initialCamera, onCameraChange, availableDates: _availableDates, thresholdEnabled: _thresholdEnabled = false, thresholdMin: _thresholdMin = null, thresholdMax: _thresholdMax = null }, ref) {
+  function CesiumViewer({ selectedDate, isLoading, initialBasemap = 'satellite', onMapClick, clickedPosition, colorScaleMin = -2, colorScaleMax = 35, drawingMode: _drawingMode = false, onBboxDrawn, activeVariable: _activeVariable = 'sst', visibleLayers = ['sst'], initialCamera, onCameraChange, availableDates: _availableDates, thresholdEnabled: _thresholdEnabled = false, thresholdMin: _thresholdMin = null, thresholdMax: _thresholdMax = null, activeMode = 'online', activeDataset = null, localVariable, localTimeIndex = 0, colormap }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const sstLayerRef = useRef<Cesium.ImageryLayer | null>(null);
@@ -332,6 +364,11 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
         baseLayerRef.current = newLayers[0] || null;
         labelsLayerRef.current = newLayers[1] || null;
         
+        // Ensure base layer stays at index 0 beneath all data overlays
+        if (baseLayerRef.current) {
+          viewer.imageryLayers.lowerToBottom(baseLayerRef.current);
+        }
+
         // Respect current labels visibility state
         if (labelsLayerRef.current) {
           labelsLayerRef.current.show = labelsVisible;
@@ -597,7 +634,7 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
     // Performance & rendering settings
     viewer.scene.fog.enabled = false;
     viewer.scene.globe.showGroundAtmosphere = false;
-    viewer.scene.globe.baseColor = Cesium.Color.BLACK; // Neutral background for unrendered areas
+    viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0b1622'); // Natural ocean tone, never pitch black
     if (viewer.scene.skyAtmosphere) {
       viewer.scene.skyAtmosphere.show = false;
     }
@@ -618,6 +655,7 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
           viewer.imageryLayers.lowerToBottom(baseLayerRef.current);
         }
         
+        raiseLabelsToTop();
         viewer.scene.requestRender();
       }
     });
@@ -726,6 +764,57 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
     const abortController = new AbortController();
     layerUpdateAbortRef.current = abortController;
 
+    // Local Dataset Mode: Render local dataset frame using actual spatial extent
+    if (activeMode === 'local' && activeDataset && viewer && !viewer.isDestroyed()) {
+      const varToRender = localVariable || activeDataset.default_variable || Object.keys(activeDataset.variables)[0] || 'data';
+      const requestKey = `local:${activeDataset.id}:${varToRender}:${localTimeIndex}:${colorScaleMin}:${colorScaleMax}:${colormap || ''}`;
+      
+      if (lastSstRequestRef.current === requestKey && dataLayersRef.current.has('local')) {
+        return;
+      }
+
+      // Remove existing data layers
+      for (const [_layerId, layer] of dataLayersRef.current) {
+        viewer.imageryLayers.remove(layer);
+      }
+      dataLayersRef.current.clear();
+
+      const imageUrl = `/api/local-dataset/${encodeURIComponent(activeDataset.id)}/frame?variable=${encodeURIComponent(varToRender)}&time_index=${localTimeIndex}&min_val=${colorScaleMin}&max_val=${colorScaleMax}&colormap=${colormap || ''}`;
+      const ext = activeDataset.spatial_extent;
+
+      try {
+        const provider = await Cesium.SingleTileImageryProvider.fromUrl(imageUrl, {
+          rectangle: Cesium.Rectangle.fromDegrees(
+            ext.west,
+            ext.south,
+            ext.east,
+            ext.north
+          ),
+        });
+
+        if (viewer && !viewer.isDestroyed() && !abortController.signal.aborted) {
+          const layer = viewer.imageryLayers.addImageryProvider(provider);
+          layer.show = true;
+          layer.alpha = 1.0;
+          viewer.imageryLayers.raiseToTop(layer);
+          if (baseLayerRef.current) {
+            viewer.imageryLayers.lowerToBottom(baseLayerRef.current);
+          }
+          dataLayersRef.current.set('local', layer);
+          lastSstRequestRef.current = requestKey;
+          console.log(`[YARA Local] Rendered frame for ${activeDataset.name} [${varToRender}] on globe`);
+        }
+      } catch (err) {
+        console.error('[YARA Local] Failed to load local dataset imagery:', err);
+      }
+
+      raiseLabelsToTop();
+      if (viewer && !viewer.isDestroyed()) {
+        viewer.scene.requestRender();
+      }
+      return;
+    }
+
     const currentLayerIds = new Set(dataLayersRef.current.keys());
     const targetLayerIds = new Set(layers);
     
@@ -798,6 +887,9 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
             layer.contrast = 1.0;
             
             viewer.imageryLayers.raiseToTop(layer);
+            if (baseLayerRef.current) {
+              viewer.imageryLayers.lowerToBottom(baseLayerRef.current);
+            }
             dataLayersRef.current.set(variable, layer);
             lastSstRequestRef.current = requestKey;
             console.log(`[YARA SST] Loaded SST for ${date} on globe.`);
@@ -827,17 +919,27 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
     if (viewer && !viewer.isDestroyed()) {
       viewer.scene.requestRender();
     }
-  }, [raiseLabelsToTop]);
+  }, [raiseLabelsToTop, activeMode, activeDataset, localVariable, localTimeIndex, colorScaleMin, colorScaleMax, colormap]);
 
-  // Update layers when date, color scale, or visibleLayers changes
+  // Update layers when date, color scale, visibleLayers, or local dataset changes
   const prevDateRef = useRef<string>('');
   const prevSstScaleRef = useRef<{ min: number; max: number }>({ min: colorScaleMin, max: colorScaleMax });
+  const prevLocalKeyRef = useRef<string>('');
   
   useEffect(() => {
-    if (!selectedDate || isLoading) return;
-    
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed()) return;
+
+    if (activeMode === 'local') {
+      const localKey = `${activeDataset?.id}:${localVariable}:${localTimeIndex}:${colorScaleMin}:${colorScaleMax}:${colormap}`;
+      if (prevLocalKeyRef.current !== localKey) {
+        prevLocalKeyRef.current = localKey;
+        updateDataLayers(selectedDate, visibleLayers);
+      }
+      return;
+    }
+
+    if (!selectedDate || isLoading) return;
     
     // Clear all layers if date changed
     if (prevDateRef.current !== selectedDate) {
@@ -859,7 +961,7 @@ export const CesiumViewer = forwardRef<CesiumViewerHandle, CesiumViewerProps>(
     }
     
     updateDataLayers(selectedDate, visibleLayers);
-  }, [selectedDate, isLoading, updateDataLayers, visibleLayers]);
+  }, [selectedDate, isLoading, updateDataLayers, visibleLayers, activeMode, activeDataset, localVariable, localTimeIndex, colorScaleMin, colorScaleMax, colormap]);
 
   return (
     <div 

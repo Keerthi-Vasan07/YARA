@@ -114,7 +114,13 @@ def _render_sst_png(data: dict) -> bytes:
     Transparent pixels for land/missing values.
     """
     values = np.asarray(data["values"], dtype=np.float32)
-    valid = np.isfinite(values) & (values != data["missing_value"])
+    missing_val = float(data.get("missing_value", -9999.0))
+    valid = (
+        np.isfinite(values)
+        & ~np.isclose(values, missing_val)
+        & (values > -10.0)
+        & (values < 55.0)
+    )
 
     # SST display range
     vmin, vmax = -2.0, 35.0
@@ -136,6 +142,8 @@ def _render_sst_png(data: dict) -> bytes:
         rgb[..., channel] = np.interp(normalized, positions, stops[:, channel])
 
     rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+    # Ensure land and nodata pixels are strictly [0, 0, 0, 0]
+    rgb[~valid] = 0
     alpha = np.where(valid, 255, 0).astype(np.uint8)
     rgba = np.dstack([rgb, alpha])
 

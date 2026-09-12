@@ -1,4 +1,4 @@
-﻿"""
+"""
 API v1 routers - aggregates all route modules.
 """
 
@@ -13,6 +13,7 @@ from .timeseries import router as timeseries_router
 from .stac import router as stac_router
 from .zarr import router as zarr_router
 from .opendap_sst import router as opendap_sst_router
+from .local_dataset import router as local_dataset_router
 
 # Main v1 router that combines all sub-routers
 router = APIRouter()
@@ -44,3 +45,5 @@ router.include_router(zarr_router)
 # OPeNDAP SST endpoints
 router.include_router(opendap_sst_router)
 
+# Local dataset endpoints (/api/local-dataset/*)
+router.include_router(local_dataset_router)

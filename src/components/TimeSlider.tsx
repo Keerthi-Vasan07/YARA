@@ -69,22 +69,35 @@ interface TimeSliderProps {
   onToggleCollapsed?: () => void;
 }
 
-// Parse date string to components
-function parseDate(dateStr: string): { year: number; month: number; day: number } {
+// Parse date string to components (supports YYYY-MM-DD and YYYY-MM-DDTHH:MM:SSZ)
+function parseDate(dateStr: string): { year: number; month: number; day: number; time?: string } {
+  if (!dateStr) return { year: 2026, month: 1, day: 1 };
+  if (dateStr.includes('T')) {
+    const [dPart, tPart] = dateStr.split('T');
+    const [year, month, day] = dPart.split('-').map(Number);
+    const timeClean = tPart.replace('Z', '').slice(0, 5);
+    return { year, month: month || 1, day: day || 1, time: `${timeClean} UTC` };
+  }
   const [year, month, day] = dateStr.split('-').map(Number);
-  return { year, month, day };
+  return { year, month: month || 1, day: day || 1 };
 }
 
-// Format date for display - includes day
+// Format date for display - includes day and optional time
 function formatDate(dateStr: string): string {
-  const { year, month, day } = parseDate(dateStr);
-  return `${day} ${MONTHS_FULL[month - 1]} ${year}`;
+  if (!dateStr) return '';
+  const { year, month, day, time } = parseDate(dateStr);
+  const timeStr = time ? ` ${time}` : '';
+  const monthName = MONTHS_FULL[month - 1] || '';
+  return `${day} ${monthName} ${year}${timeStr}`;
 }
 
 // Format short date
 function formatShortDate(dateStr: string): string {
-  const { year, month, day } = parseDate(dateStr);
-  return `${day} ${MONTHS[month - 1]} ${year}`;
+  if (!dateStr) return '';
+  const { year, month, day, time } = parseDate(dateStr);
+  const timeStr = time ? ` ${time}` : '';
+  const monthName = MONTHS[month - 1] || '';
+  return `${day} ${monthName} ${year}${timeStr}`;
 }
 
 /*

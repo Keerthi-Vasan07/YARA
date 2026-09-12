@@ -23,6 +23,11 @@ import { BboxDrawingOverlay, BoundingBox } from './BboxDrawingOverlay';
 import { DownloadPanel } from './DownloadPanel';
 import { BookmarksPanel, Bookmark } from './BookmarksPanel';
 import { fetchTimeRangeForVariable, fetchSSTPoint, fetchVariablePoint, TimeRange, SSTPointQuery, VariablePointQuery } from '../api/sstApi';
+import { LocalDatasetModal } from './LocalDataset/LocalDatasetModal';
+import { DatasetVariableSelector } from './LocalDataset/DatasetVariableSelector';
+import { PlaybackControls } from './LocalDataset/PlaybackControls';
+import { DatasetInfo } from '../types/dataset';
+import { fetchActiveMode, fetchLocalPoint } from '../services/localDatasetApi';
 
 export function Layout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true); // Start collapsed for cleaner view
@@ -71,6 +76,13 @@ export function Layout() {
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Local scientific dataset state
+  const [activeMode, setActiveMode] = useState<'online' | 'local'>('online');
+  const [activeDataset, setActiveDataset] = useState<DatasetInfo | null>(null);
+  const [localVariable, setLocalVariable] = useState<string>('');
+  const [localTimeIndex, setLocalTimeIndex] = useState<number>(0);
+  const [localModalOpen, setLocalModalOpen] = useState<boolean>(false);
 
   // URL state management - read initial values from URL
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
@@ -348,6 +360,45 @@ export function Layout() {
       }
     }
     
+    // Local Dataset point query
+    if (activeMode === 'local' && activeDataset) {
+      setClickedPosition({ lon, lat });
+      setSstPointLoading(true);
+      setSstPointData(null);
+      setScreenPosition(currentScreenPos);
+
+      try {
+        const pdata = await fetchLocalPoint(
+          activeDataset.id,
+          lat,
+          lon,
+          localVariable || activeDataset.default_variable,
+          localTimeIndex
+        );
+        setSstPointData({
+          date: pdata.timestamp || selectedDate,
+          lon: pdata.matched_lon,
+          lat: pdata.matched_lat,
+          sst: pdata.is_valid && pdata.value !== undefined ? pdata.value : null,
+          unit: pdata.units || '',
+          message: pdata.is_valid ? undefined : 'No data / Land cell'
+        });
+      } catch (err) {
+        console.error('Failed to query local point:', err);
+        setSstPointData({
+          date: selectedDate,
+          lon,
+          lat,
+          sst: null,
+          unit: '',
+          message: 'Failed to query local dataset point'
+        });
+      } finally {
+        setSstPointLoading(false);
+      }
+      return;
+    }
+
     // Query SST if visible
     if (sstLayer?.visible) {
       setClickedPosition({ lon, lat });
@@ -496,8 +547,39 @@ export function Layout() {
     return () => clearInterval(checkViewer);
   }, [viewerReady]);
 
-  // Fetch available time range on mount and when variable changes
+  // Check on mount if a local dataset is already active on the server
   useEffect(() => {
+    async function checkActiveDataset() {
+      try {
+        const modeData = await fetchActiveMode();
+        if (modeData.mode === 'local' && modeData.dataset) {
+          setActiveMode('local');
+          setActiveDataset(modeData.dataset);
+          setLocalVariable(modeData.dataset.default_variable || Object.keys(modeData.dataset.variables)[0] || '');
+          const ts = modeData.dataset.time_axis.timestamps;
+          if (ts && ts.length > 0) {
+            setSelectedDate(ts[0]);
+            setTimeRange({
+              total_months: 1,
+              start_date: modeData.dataset.time_axis.start_time || ts[0],
+              end_date: modeData.dataset.time_axis.end_time || ts[ts.length - 1],
+              available_dates: ts,
+              years: {},
+            });
+            setIsLoading(false);
+          }
+        }
+      } catch (err) {
+        console.warn('Could not check active dataset on start:', err);
+      }
+    }
+    checkActiveDataset();
+  }, []);
+
+  // Fetch available time range on mount and when variable changes (only when in online mode)
+  useEffect(() => {
+    if (activeMode === 'local') return;
+
     async function loadTimeRange() {
       try {
         setIsLoading(true);
@@ -552,12 +634,53 @@ export function Layout() {
       }
     }
     loadTimeRange();
-  }, [initialUrlDate, updateUrlState, activeLayer?.variableId]);
+  }, [initialUrlDate, updateUrlState, activeLayer?.variableId, activeMode]);
+
+  const handleDatasetActivated = useCallback((dataset: DatasetInfo) => {
+    setActiveMode('local');
+    setActiveDataset(dataset);
+    setLocalVariable(dataset.default_variable || Object.keys(dataset.variables)[0] || '');
+    setLocalTimeIndex(0);
+    const ts = dataset.time_axis.timestamps;
+    if (ts && ts.length > 0) {
+      setSelectedDate(ts[0]);
+      setTimeRange({
+        total_months: 1,
+        start_date: dataset.time_axis.start_time || ts[0],
+        end_date: dataset.time_axis.end_time || ts[ts.length - 1],
+        available_dates: ts,
+        years: {},
+      });
+    }
+  }, []);
+
+  const handleDatasetDeactivated = useCallback(() => {
+    setActiveMode('online');
+    setActiveDataset(null);
+    setLocalVariable('');
+    setLocalTimeIndex(0);
+    // Reload online time range
+    fetchTimeRangeForVariable('sst').then(data => {
+      setTimeRange(data);
+      if (data.available_dates.length > 0) {
+        const latestDate = data.available_dates[data.available_dates.length - 1];
+        setSelectedDate(latestDate);
+        updateUrlState(latestDate);
+      }
+    }).catch(console.error);
+  }, [updateUrlState]);
 
   const handleDateChange = useCallback((date: string) => {
     setSelectedDate(date);
     updateUrlState(date);
-  }, [updateUrlState]);
+    if (activeMode === 'local' && activeDataset) {
+      const tsList = activeDataset.time_axis.timestamps;
+      const idx = tsList.indexOf(date);
+      if (idx >= 0) {
+        setLocalTimeIndex(idx);
+      }
+    }
+  }, [updateUrlState, activeMode, activeDataset]);
 
   // Keyboard shortcuts: Arrow keys for date, +/- for zoom
   useEffect(() => {
@@ -646,6 +769,11 @@ export function Layout() {
         thresholdEnabled={thresholdEnabled}
         thresholdMin={thresholdMin}
         thresholdMax={thresholdMax}
+        activeMode={activeMode}
+        activeDataset={activeDataset}
+        localVariable={localVariable}
+        localTimeIndex={localTimeIndex}
+        colormap={colormap}
       />
 
       {/* Bounding Box Drawing Overlay */}
@@ -843,7 +971,53 @@ export function Layout() {
       />
 
       {/* Floating Header */}
-      <Header />
+      <Header
+        activeDataset={activeDataset}
+        activeMode={activeMode}
+        onOpenLocalModal={() => setLocalModalOpen(true)}
+        onSwitchToOnline={handleDatasetDeactivated}
+      />
+
+      {/* Local Dataset Ingestion & Inspection Modal */}
+      <LocalDatasetModal
+        open={localModalOpen}
+        onClose={() => setLocalModalOpen(false)}
+        activeDataset={activeDataset}
+        onDatasetActivated={handleDatasetActivated}
+        onDatasetDeactivated={handleDatasetDeactivated}
+      />
+
+      {/* Floating Variable Selector for Local Multi-Variable Datasets */}
+      {activeMode === 'local' && activeDataset && (
+        <Box sx={{ position: 'absolute', top: 58, right: 12, zIndex: 1000 }}>
+          <DatasetVariableSelector
+            dataset={activeDataset}
+            selectedVariable={localVariable}
+            onSelectVariable={setLocalVariable}
+          />
+        </Box>
+      )}
+
+      {/* Floating Playback Controls for Multi-Frame Datasets */}
+      {activeMode === 'local' && activeDataset && activeDataset.time_axis.count > 1 && (
+        <Box sx={{ position: 'absolute', bottom: 85, left: sidebarWidth + 20, zIndex: 1000 }}>
+          <PlaybackControls
+            timestamps={activeDataset.time_axis.timestamps}
+            currentIndex={localTimeIndex}
+            onIndexChange={(idx) => {
+              setLocalTimeIndex(idx);
+              const ts = activeDataset.time_axis.timestamps[idx];
+              if (ts) {
+                setSelectedDate(ts);
+                updateUrlState(ts);
+              }
+            }}
+            datasetId={activeDataset.id}
+            variable={localVariable}
+            resolution={activeDataset.time_axis.resolution}
+          />
+        </Box>
+      )}
 
       {/* Floating Sidebar */}
       <Box

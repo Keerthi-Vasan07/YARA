@@ -144,7 +144,7 @@ def get_contour_levels(variable: str, zoom: int) -> list:
 @lru_cache(maxsize=1)
 def load_datasets_config() -> dict:
     """Load the datasets configuration."""
-    with open(DATASETS_CONFIG) as f:
+    with open(DATASETS_CONFIG, encoding="utf-8") as f:
         return json.load(f)
 
 
