@@ -20,7 +20,7 @@ from server.data_service import sst_service
 from server.tile_server import render_tile, TRANSPARENT_TILE_PNG
 from server.api.dependencies import TILES_DIR
 
-router = APIRouter(prefix="/api/v1", tags=["tiles"])
+router = APIRouter(prefix="/api", tags=["tiles"])
 
 # Thread pool executor for CPU/IO-bound tile rendering
 _tile_executor = None
@@ -61,6 +61,7 @@ async def get_sst_image(
 
 
 @router.get("/tiles/{variable}/{date}/{z}/{x}/{y}.png")
+@router.get("/v1/tiles/{variable}/{date}/{z}/{x}/{y}.png")
 async def get_variable_tile(
     variable: str,
     date: str,

@@ -25,6 +25,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Ensure YARA application loggers emit at INFO level.
+# Uvicorn captures Python's logging — this makes [YARA API/OPeNDAP/RASTER] messages visible.
+logging.getLogger("server").setLevel(logging.INFO)
+logging.getLogger("server.api").setLevel(logging.INFO)
+logging.getLogger("server.data_sources").setLevel(logging.INFO)
+
 # Directory for pre-computed COG tiles
 PRODUCTS_DIR = Path(__file__).parent / "products"
 
@@ -71,3 +77,4 @@ app.add_middleware(
 
 # Include all API v1 routes
 app.include_router(v1_router)
+

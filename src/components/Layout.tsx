@@ -1,1037 +1,1932 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Box } from '@mui/material';
 import * as Cesium from 'cesium';
+
 import { Header } from './Header';
 import { Footer } from './Footer';
-import { Sidebar, SIDEBAR_WIDTH, SIDEBAR_WIDTH_COLLAPSED } from './Sidebar';
+import {
+  Sidebar,
+  SIDEBAR_WIDTH,
+  SIDEBAR_WIDTH_COLLAPSED,
+} from './Sidebar';
+
 import { TimeSlider, MOCK_DATES } from './TimeSlider';
-import { CesiumViewer, CesiumViewerHandle, BasemapId } from './CesiumViewer';
+
+import {
+  CesiumViewer,
+  CesiumViewerHandle,
+  BasemapId,
+} from './CesiumViewer';
+
 import { MapControls } from './MapControls';
 import { MouseCoordinates } from './MouseCoordinates';
 import { ColorScaleControls } from './ColorScaleControls';
-import { LayersPanelPopup, LayerItem, DEFAULT_LAYERS } from './LayersPanelPopup';
-import { ActiveLayer, DEFAULT_ACTIVE_LAYER } from './LayerBrowser';
-import { LayerInfoDialog } from './LayerInfoDialog';
-import { SSTInfoPanel } from './SSTInfoPanel';
-import { VariableInfoPanel } from './VariableInfoPanel';
+
+import {
+  LayersPanelPopup,
+  LayerItem,
+  DEFAULT_LAYERS,
+} from './LayersPanelPopup';
+
+import {
+  ActiveLayer,
+  DEFAULT_ACTIVE_LAYER,
+} from './LayerBrowser';
+
 import { AnalyticsPanel } from './AnalyticsPanel';
 import { SettingsPanel } from './SettingsPanel';
 import { AboutPanel } from './AboutPanel';
 import { DataProvenancePage } from './DataProvenancePage';
 import { TermsOfUsePage } from './TermsOfUsePage';
-import { BboxDrawingOverlay, BoundingBox } from './BboxDrawingOverlay';
-import { DownloadPanel } from './DownloadPanel';
-import { BookmarksPanel, Bookmark } from './BookmarksPanel';
-import { fetchTimeRangeForVariable, fetchSSTPoint, fetchVariablePoint, TimeRange, SSTPointQuery, VariablePointQuery } from '../api/sstApi';
+
+import {
+  BookmarksPanel,
+  Bookmark,
+} from './BookmarksPanel';
+
+import {
+  TimeRange,
+  SSTPointQuery,
+  VariablePointQuery,
+} from '../api/sstApi';
+
 import { LocalDatasetModal } from './LocalDataset/LocalDatasetModal';
 import { DatasetVariableSelector } from './LocalDataset/DatasetVariableSelector';
-import { PlaybackControls } from './LocalDataset/PlaybackControls';
-import { DatasetInfo, AnalysisOptions, LocalPointQueryResponse } from '../types/dataset';
-import { defaultAnalysis, analysisError } from '../utils/gradientColormap';
+
+import {
+  DatasetInfo,
+  AnalysisOptions,
+  LocalPointQueryResponse,
+} from '../types/dataset';
+
+import {
+  defaultAnalysis,
+  analysisError,
+} from '../utils/gradientColormap';
+
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+
 import { LocalPointInfoPanel } from './LocalPointInfoPanel';
 import { LocalAnalysisStatus } from './LocalAnalysisStatus';
-import { fetchActiveMode, fetchLocalPoint } from '../services/localDatasetApi';
+
+import {
+  fetchActiveMode,
+  fetchLocalPoint,
+} from '../services/localDatasetApi';
+
+import {
+  OnlineControls,
+  OnlineState,
+} from './OnlineControls';
+
+import {
+  OnlinePointInfoPanel,
+} from './OnlinePointInfoPanel';
+
+import {
+  fetchOnlinePoint,
+  OnlinePointQuery,
+} from '../api/onlineApi';
+
+import {
+  ScientificProcessingToast,
+  ProcessingState,
+} from './ScientificProcessingToast';
+
+
+
 
 export function Layout() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(true); // Start collapsed for cleaner view
-  const [layersPanelOpen, setLayersPanelOpen] = useState(false);
-  const [analyticsPanelOpen, setAnalyticsPanelOpen] = useState(() => {
-    return window.location.pathname === '/variables';
-  });
-  const [settingsPanelOpen, setSettingsPanelOpen] = useState(() => {
-    return window.location.pathname === '/settings';
-  });
-  const [aboutPanelOpen, setAboutPanelOpen] = useState(() => {
-    return window.location.pathname === '/about';
-  });
-  const [dataProvenanceOpen, setDataProvenanceOpen] = useState(() => {
-    return window.location.pathname === '/data';
-  });
-  const [termsOpen, setTermsOpen] = useState(() => {
-    return window.location.pathname === '/terms';
-  });
-  const [bookmarksPanelOpen, setBookmarksPanelOpen] = useState(() => {
-    return window.location.pathname === '/bookmarks';
-  });
-  const [timelineCollapsed, setTimelineCollapsed] = useState(() => {
-    const saved = localStorage.getItem('timeline-collapsed');
-    return saved !== null ? saved === 'true' : true; // Default to collapsed
-  });
 
-  // Listen for settings changes (from Settings panel) and sync timeline state
-  useEffect(() => {
-    const handleSettingsChanged = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail && typeof detail.timelineCollapsed === 'boolean') {
-        setTimelineCollapsed(detail.timelineCollapsed);
-      }
-    };
-    window.addEventListener('settings-changed', handleSettingsChanged);
-    return () => window.removeEventListener('settings-changed', handleSettingsChanged);
-  }, []);
+  /* ------------------------------------------------------------------ */
+  /* UI STATE                                                           */
+  /* ------------------------------------------------------------------ */
 
-  const cesiumRef = useRef<CesiumViewerHandle>(null);
-  const [viewerReady, setViewerReady] = useState(false);
-  const [currentBasemap, setCurrentBasemap] = useState<BasemapId>('satellite');
-  const [labelsVisible, setLabelsVisible] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] =
+    useState(true);
 
-  const [timeRange, setTimeRange] = useState<TimeRange | null>(null);
-  const [selectedDate, setSelectedDate] = useState<string>('');
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  const [layersPanelOpen, setLayersPanelOpen] =
+    useState(false);
 
-  // Local scientific dataset state
-  const [activeMode, setActiveMode] = useState<'online' | 'local'>('online');
-  const [activeDataset, setActiveDataset] = useState<DatasetInfo | null>(null);
-  const [localVariable, setLocalVariable] = useState<string>('');
-  const [localTimeIndex, setLocalTimeIndex] = useState<number>(0);
-  const [localModalOpen, setLocalModalOpen] = useState<boolean>(false);
-  const [localAnalysis, setLocalAnalysis] = useState<AnalysisOptions>(defaultAnalysis);
-  const [validAnalysis, setValidAnalysis] = useState<AnalysisOptions>(defaultAnalysis);
-  const [localGridEnabled, setLocalGridEnabled] = useState(false);
-  const [localPoint, setLocalPoint] = useState<LocalPointQueryResponse | null>(null);
-  const [localPointLoading, setLocalPointLoading] = useState(false);
-  const [localPointError, setLocalPointError] = useState('');
-  const [localClick, setLocalClick] = useState<{ lat: number; lon: number } | null>(null);
-  useEffect(() => {
-    if (!analysisError(localAnalysis)) setValidAnalysis(localAnalysis);
-  }, [localAnalysis]);
-  const debouncedAnalysis = useDebouncedValue(validAnalysis);
+  const [analyticsPanelOpen, setAnalyticsPanelOpen] =
+    useState(() => window.location.pathname === '/variables');
 
-  useEffect(() => {
-    let cancelled = false;
-    setLocalPoint(null); setLocalPointError(''); setLocalPointLoading(false);
-    if (activeMode !== 'local' || !activeDataset || !localClick) return;
-    setLocalPointLoading(true);
-    fetchLocalPoint(activeDataset.id, localClick.lat, localClick.lon, localVariable, localTimeIndex)
-      .then(data => { if (!cancelled) setLocalPoint(data); })
-      .catch(err => { if (!cancelled) setLocalPointError(String(err)); })
-      .finally(() => { if (!cancelled) setLocalPointLoading(false); });
-    return () => { cancelled = true; };
-  }, [activeMode, activeDataset, localVariable, localTimeIndex, localClick]);
+  const [settingsPanelOpen, setSettingsPanelOpen] =
+    useState(() => window.location.pathname === '/settings');
 
-  // URL state management - read initial values from URL
-  const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
-  const initialUrlDate = urlParams.get('date');
-  
-  // Parse camera position from URL (lat, lon, z for height)
-  const initialCamera = useMemo(() => {
-    const lat = parseFloat(urlParams.get('lat') || '');
-    const lon = parseFloat(urlParams.get('lon') || '');
-    const z = parseFloat(urlParams.get('z') || '');
-    if (!isNaN(lat) && !isNaN(lon) && !isNaN(z)) {
-      return { lat, lon, height: z };
-    }
-    return undefined;
-  }, [urlParams]);
+  const [aboutPanelOpen, setAboutPanelOpen] =
+    useState(() => window.location.pathname === '/about');
 
-  // Update URL when date changes
-  const updateUrlState = useCallback((date: string) => {
-    const url = new URL(window.location.href);
-    url.searchParams.set('date', date);
-    window.history.replaceState({}, '', url.toString());
-  }, []);
+  const [dataProvenanceOpen, setDataProvenanceOpen] =
+    useState(() => window.location.pathname === '/data');
 
-  // Update URL with visible layers
-  const updateLayersUrl = useCallback((visibleLayerIds: string[]) => {
-    const url = new URL(window.location.href);
-    if (visibleLayerIds.length > 0) {
-      url.searchParams.set('layers', visibleLayerIds.join(','));
-    } else {
-      url.searchParams.delete('layers');
-    }
-    window.history.replaceState({}, '', url.toString());
-  }, []);
+  const [termsOpen, setTermsOpen] =
+    useState(() => window.location.pathname === '/terms');
 
-  // Update URL path for panel navigation
-  const updateUrlPath = useCallback((path: string) => {
-    const url = new URL(window.location.href);
-    url.pathname = path;
-    window.history.pushState({}, '', url.toString());
-  }, []);
+  const [bookmarksPanelOpen, setBookmarksPanelOpen] =
+    useState(() => window.location.pathname === '/bookmarks');
 
-  // Panel open/close handlers with URL persistence
-  const handleOpenAnalytics = useCallback(() => {
-    setAnalyticsPanelOpen(true);
-    updateUrlPath('/variables');
-  }, [updateUrlPath]);
+  const [timelineCollapsed, setTimelineCollapsed] =
+    useState(() => {
+      const saved =
+        localStorage.getItem('timeline-collapsed');
 
-  const handleCloseAnalytics = useCallback(() => {
-    setAnalyticsPanelOpen(false);
-    updateUrlPath('/');
-  }, [updateUrlPath]);
-
-  const handleOpenSettings = useCallback(() => {
-    setSettingsPanelOpen(true);
-    updateUrlPath('/settings');
-  }, [updateUrlPath]);
-
-  const handleCloseSettings = useCallback(() => {
-    setSettingsPanelOpen(false);
-    updateUrlPath('/');
-  }, [updateUrlPath]);
-
-  const handleOpenAbout = useCallback(() => {
-    setAboutPanelOpen(true);
-    updateUrlPath('/about');
-  }, [updateUrlPath]);
-
-  const handleCloseAbout = useCallback(() => {
-    setAboutPanelOpen(false);
-    updateUrlPath('/');
-  }, [updateUrlPath]);
-
-  // TODO: wire up handleOpenDataProvenance to a button when ready
-  const handleCloseDataProvenance = useCallback(() => {
-    setDataProvenanceOpen(false);
-    updateUrlPath('/');
-  }, [updateUrlPath]);
-
-  // TODO: wire up handleOpenTerms to a button when ready
-  const handleCloseTerms = useCallback(() => {
-    setTermsOpen(false);
-    updateUrlPath('/');
-  }, [updateUrlPath]);
-
-  const handleOpenBookmarks = useCallback(() => {
-    setBookmarksPanelOpen(true);
-    updateUrlPath('/bookmarks');
-  }, [updateUrlPath]);
-
-  const handleCloseBookmarks = useCallback(() => {
-    setBookmarksPanelOpen(false);
-    updateUrlPath('/');
-  }, [updateUrlPath]);
-
-  // Track current camera position for bookmarks
-  const [currentCameraPosition, setCurrentCameraPosition] = useState({ lat: 0, lon: 0, height: 10000000 });
-
-  // Update URL with camera position (debounced in CesiumViewer) and track for bookmarks
-  const handleCameraChange = useCallback((lon: number, lat: number, height: number) => {
-    setCurrentCameraPosition({ lat, lon, height });
-    const url = new URL(window.location.href);
-    url.searchParams.set('lat', lat.toFixed(2));
-    url.searchParams.set('lon', lon.toFixed(2));
-    url.searchParams.set('z', Math.round(height).toString());
-    window.history.replaceState({}, '', url.toString());
-  }, []);
-
-  // Load a bookmark (fly to position, set date, set layers)
-  const handleLoadBookmark = useCallback((bookmark: Bookmark) => {
-    // Set date
-    setSelectedDate(bookmark.date);
-    updateUrlState(bookmark.date);
-    
-    // Set layers
-    setLayers((prev) => {
-      const newLayers = prev.map((layer) => ({
-        ...layer,
-        visible: bookmark.layers.includes(layer.id),
-      }));
-      const visibility: Record<string, boolean> = {};
-      newLayers.forEach(l => { visibility[l.id] = l.visible; });
-      localStorage.setItem('layer-visibility', JSON.stringify(visibility));
-      updateLayersUrl(bookmark.layers);
-      return newLayers;
+      return saved !== null
+        ? saved === 'true'
+        : true;
     });
-    
-    // Fly to camera position
-    const viewer = cesiumRef.current?.viewer;
-    if (viewer && !viewer.isDestroyed()) {
-      viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(bookmark.lon, bookmark.lat, bookmark.height),
-        duration: 1.5,
-      });
-    }
-    
-    // Set basemap if provided
-    if (bookmark.basemap) {
-      cesiumRef.current?.setBasemap(bookmark.basemap as BasemapId);
-      setCurrentBasemap(bookmark.basemap as BasemapId);
-    }
-  }, [updateUrlState, updateLayersUrl]);
 
-  // Layer configuration - with localStorage persistence for visibility
-  // URL takes priority over localStorage
-  const [layers, setLayers] = useState<LayerItem[]>(() => {
-    // Check URL first (read synchronously since this is initial state)
-    const urlLayersParam = new URLSearchParams(window.location.search).get('layers');
-    if (urlLayersParam) {
-      const urlLayers = urlLayersParam.split(',').filter(Boolean);
-      return DEFAULT_LAYERS.map(layer => ({
-        ...layer,
-        visible: urlLayers.includes(layer.id),
-      }));
-    }
-    // Fall back to localStorage
-    const savedVisibility = localStorage.getItem('layer-visibility');
-    if (savedVisibility) {
-      try {
-        const visibility: Record<string, boolean> = JSON.parse(savedVisibility);
-        return DEFAULT_LAYERS.map(layer => ({
-          ...layer,
-          visible: visibility[layer.id] ?? layer.visible,
-        }));
-      } catch {
-        return DEFAULT_LAYERS;
-      }
-    }
-    return DEFAULT_LAYERS;
-  });
-  const [activeLayer, setActiveLayer] = useState<ActiveLayer>(DEFAULT_ACTIVE_LAYER);
-  const [layerInfoOpen, setLayerInfoOpen] = useState(false);
-  // const [showLayerList, setShowLayerList] = useState(false); // TODO: uncomment with LayerBrowser
 
-  // Bounding box drawing state
-  const [isDrawingBbox, setIsDrawingBbox] = useState(false);
-  const [drawnBbox, setDrawnBbox] = useState<{ north: number; south: number; east: number; west: number } | null>(null);
-  const [downloadPanelOpen, setDownloadPanelOpen] = useState(false);
+  /* ------------------------------------------------------------------ */
+  /* CESIUM                                                            */
+  /* ------------------------------------------------------------------ */
 
-  // Color scale settings (with localStorage persistence)
-  const [colorScaleMin, setColorScaleMin] = useState(() => {
-    const saved = localStorage.getItem('sst-color-min');
-    return saved ? parseFloat(saved) : -2;
-  });
-  const [colorScaleMax, setColorScaleMax] = useState(() => {
-    const saved = localStorage.getItem('sst-color-max');
-    return saved ? parseFloat(saved) : 35;
-  });
-  const [colormap, setColormap] = useState(() => {
-    return localStorage.getItem('sst-colormap') || 'thermal';
-  });
-  const [colorScaleOpen, setColorScaleOpen] = useState(false);
-  const localFrameStyle = useMemo(() => ({ analysis: debouncedAnalysis, colormap,
-    minVal: colorScaleMin, maxVal: colorScaleMax }), [debouncedAnalysis, colormap, colorScaleMin, colorScaleMax]);
+  const cesiumRef =
+    useRef<CesiumViewerHandle>(null);
 
-  // Threshold masking state
-  const [thresholdEnabled, setThresholdEnabled] = useState(false);
-  const [thresholdMin, setThresholdMin] = useState<number | null>(null);
-  const [thresholdMax, setThresholdMax] = useState<number | null>(null);
+  const [viewerReady, setViewerReady] =
+    useState(false);
 
-  // SST point query state
-  const [sstPointData, setSstPointData] = useState<SSTPointQuery | null>(null);
-  const [sstPointLoading, setSstPointLoading] = useState(false);
-  const [clickedPosition, setClickedPosition] = useState<{ lon: number; lat: number } | null>(null);
-  const [screenPosition, setScreenPosition] = useState<{ x: number; y: number } | null>(null);
+  const [currentBasemap, setCurrentBasemap] =
+    useState<BasemapId>('satellite');
 
-  // Variable (SIC/SLA) point query state
-  const [variablePointData, setVariablePointData] = useState<VariablePointQuery | null>(null);
-  const [variablePointLoading, setVariablePointLoading] = useState(false);
-  const [variableScreenPosition, setVariableScreenPosition] = useState<{ x: number; y: number } | null>(null);
+  const [labelsVisible, setLabelsVisible] =
+    useState(false);
 
-  // Persist color scale preferences to localStorage
-  useEffect(() => {
-    localStorage.setItem('sst-color-min', String(colorScaleMin));
-  }, [colorScaleMin]);
 
-  useEffect(() => {
-    localStorage.setItem('sst-color-max', String(colorScaleMax));
-  }, [colorScaleMax]);
+  /* ------------------------------------------------------------------ */
+  /* DATA MODE                                                          */
+  /* ------------------------------------------------------------------ */
 
-  useEffect(() => {
-    localStorage.setItem('sst-colormap', colormap);
-  }, [colormap]);
+  const [activeMode, setActiveMode] =
+    useState<'online' | 'local'>('online');
 
-  // Update screen position when camera moves
-  useEffect(() => {
-    const viewer = cesiumRef.current?.viewer;
-    if (!viewer || viewer.isDestroyed() || !clickedPosition) return;
+  const [activeDataset, setActiveDataset] =
+    useState<DatasetInfo | null>(null);
 
-    const updateScreenPos = () => {
-      if (viewer.isDestroyed() || !clickedPosition) return;
-      const cartesian = Cesium.Cartesian3.fromDegrees(clickedPosition.lon, clickedPosition.lat);
-      const screenPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, cartesian);
-      if (screenPos) {
-        setScreenPosition({ x: screenPos.x, y: screenPos.y });
-      } else {
-        setScreenPosition(null); // Point not visible
-      }
-    };
+  const [localVariable, setLocalVariable] =
+    useState('');
 
-    // Update initially with a small delay to ensure scene is rendered
-    setTimeout(updateScreenPos, 50);
+  const [localTimeIndex, setLocalTimeIndex] =
+    useState(0);
 
-    // Listen for camera changes
-    const removeListener = viewer.camera.changed.addEventListener(updateScreenPos);
-    
-    // Also listen for scene renders
-    const postRenderListener = viewer.scene.postRender.addEventListener(updateScreenPos);
-    
-    return () => {
-      removeListener();
-      postRenderListener();
-    };
-  }, [clickedPosition, viewerReady]);
+  const [localModalOpen, setLocalModalOpen] =
+    useState(false);
 
-  // Handle map click - query visible layers at point
-  const handleMapClick = useCallback(async (lon: number, lat: number) => {
-    if (activeMode === 'local' && activeDataset) {
-      setLocalClick({ lat, lon });
-      setClickedPosition({ lat, lon });
+
+  /* ------------------------------------------------------------------ */
+  /* LOCAL DATA ANALYSIS                                               */
+  /* ------------------------------------------------------------------ */
+
+  const [localAnalysis, setLocalAnalysis] =
+    useState<AnalysisOptions>(defaultAnalysis);
+
+  const [validAnalysis, setValidAnalysis] =
+    useState<AnalysisOptions>(defaultAnalysis);
+
+  const [localGridEnabled, setLocalGridEnabled] =
+    useState(false);
+
+  const [localPoint, setLocalPoint] =
+    useState<LocalPointQueryResponse | null>(null);
+
+  const [localPointLoading, setLocalPointLoading] =
+    useState(false);
+
+  const [localPointError, setLocalPointError] =
+    useState('');
+
+  const [localClick, setLocalClick] =
+    useState<{ lat: number; lon: number } | null>(null);
+
+
+  /* ------------------------------------------------------------------ */
+  /* ONLINE DATA                                                        */
+  /* ------------------------------------------------------------------ */
+
+  const [onlineState, setOnlineState] =
+    useState<OnlineState>({
+      datasetId: '',
+      variable: '',
+      date: '',
+      resolvedDate: null,
+      availableDates: [],
+      metadata: null,
+      status: 'loading',
+      error: null,
+      registry: [],
+    });
+
+  const [onlinePointData, setOnlinePointData] =
+    useState<OnlinePointQuery | null>(null);
+
+  const [onlinePointLoading, setOnlinePointLoading] =
+    useState(false);
+
+  const [onlineScreenPosition, setOnlineScreenPosition] =
+    useState<{ x: number; y: number } | null>(null);
+
+  const [processingState, setProcessingState] =
+    useState<ProcessingState>({
+      isProcessing: false,
+      status: 'idle',
+    });
+
+
+
+  const handleOnlineApply = useCallback((datasetId: string, variable: string, date: string) => {
+    if (!datasetId || !variable || !date) {
+      console.warn('[YARA APPLY] Apply called with empty variable — ignoring');
       return;
     }
-    if (!selectedDate) return;
-    
-    // Get visible layers that support point queries
-    const sstLayer = layers.find((l) => l.id === 'sst');
-    const sicLayer = layers.find((l) => l.id === 'sic');
-    const slaLayer = layers.find((l) => l.id === 'sla');
-    const chlLayer = layers.find((l) => l.id === 'chl');
-    const kd490Layer = layers.find((l) => l.id === 'kd490');
-    
-    // If no queryable layer is visible, do nothing
-    if (!sstLayer?.visible && !sicLayer?.visible && !slaLayer?.visible && !chlLayer?.visible && !kd490Layer?.visible) return;
-    
-    // Calculate screen position
-    const viewer = cesiumRef.current?.viewer;
-    let currentScreenPos: { x: number; y: number } | null = null;
-    if (viewer && !viewer.isDestroyed()) {
-      const cartesian = Cesium.Cartesian3.fromDegrees(lon, lat);
-      const screenPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, cartesian);
-      if (screenPos) {
-        currentScreenPos = { x: screenPos.x, y: screenPos.y };
-      }
-    }
-    
-    // Query SST if visible
-    if (sstLayer?.visible) {
-      setClickedPosition({ lon, lat });
-      setSstPointLoading(true);
-      setSstPointData(null);
-      setScreenPosition(currentScreenPos);
-      
-      try {
-        const data = await fetchSSTPoint(selectedDate, lon, lat);
-        setSstPointData(data);
-      } catch (err) {
-        console.error('Failed to fetch SST point:', err);
-        setSstPointData({
-          date: selectedDate,
-          lon,
-          lat,
-          sst: null,
-          unit: '°C',
-          message: 'Failed to query SST data'
-        });
-      } finally {
-        setSstPointLoading(false);
-      }
-    }
-    
-    // Query SIC, SLA, CHL, or KD490 if visible (prefer SIC > SLA > CHL > KD490 if multiple visible)
-    const variableToQuery = sicLayer?.visible ? 'sic' : slaLayer?.visible ? 'sla' : chlLayer?.visible ? 'chl' : kd490Layer?.visible ? 'kd490' : null;
-    if (variableToQuery) {
-      setVariablePointLoading(true);
-      setVariablePointData(null);
-      setVariableScreenPosition(currentScreenPos);
-      
-      try {
-        const data = await fetchVariablePoint(variableToQuery, selectedDate, lon, lat);
-        setVariablePointData(data);
-      } catch (err) {
-        console.error(`Failed to fetch ${variableToQuery.toUpperCase()} point:`, err);
-        const unitMap: Record<string, string> = { sic: '%', sla: 'm', chl: 'mg/m³' };
-        setVariablePointData({
-          date: selectedDate,
-          variable: variableToQuery,
-          lon,
-          lat,
-          value: null,
-          unit: unitMap[variableToQuery] || '',
-          message: `Failed to query ${variableToQuery.toUpperCase()} data`
-        });
-      } finally {
-        setVariablePointLoading(false);
-      }
-    }
-  }, [selectedDate, layers, activeMode, activeDataset]);
 
-  const handleCloseSstPanel = useCallback(() => {
-    setSstPointData(null);
-    setSstPointLoading(false);
-    setClickedPosition(null);
-    setScreenPosition(null);
-  }, []);
+    console.log('[YARA FRONTEND] handleOnlineApply called');
+    console.log(`[YARA FRONTEND] Applied variable: ${variable}`);
+    console.log(`[YARA FRONTEND] Applied date: ${date}`);
+    console.log('[YARA FRONTEND] Starting scientific data fetch');
 
-  const handleCloseVariablePanel = useCallback(() => {
-    setVariablePointData(null);
-    setVariablePointLoading(false);
-    setVariableScreenPosition(null);
-  }, []);
-
-  // Close SST panel if SST layer is hidden
-  useEffect(() => {
-    const sstLayer = layers.find((l) => l.id === 'sst');
-    if (sstLayer && !sstLayer.visible && (sstPointData || sstPointLoading)) {
-      setSstPointData(null);
-      setSstPointLoading(false);
-      setClickedPosition(null);
-      setScreenPosition(null);
-    }
-  }, [layers, sstPointData, sstPointLoading]);
-
-  // Close variable panel if its layer is hidden
-  useEffect(() => {
-    if (!variablePointData && !variablePointLoading) return;
-    const variable = variablePointData?.variable;
-    if (variable) {
-      const layer = layers.find((l) => l.id === variable);
-      if (layer && !layer.visible) {
-        setVariablePointData(null);
-        setVariablePointLoading(false);
-        setVariableScreenPosition(null);
-      }
-    }
-  }, [layers, variablePointData, variablePointLoading]);
-
-  const handleToggleLayer = useCallback((layerId: string) => {
-    // Toggle individual layer visibility (overlay mode - multiple layers allowed)
-    setLayers((prev) => {
-      const newLayers = prev.map((layer) =>
-        layer.id === layerId 
-          ? { ...layer, visible: !layer.visible } 
-          : layer
-      );
-      // Persist visibility to localStorage
-      const visibility: Record<string, boolean> = {};
-      newLayers.forEach(l => { visibility[l.id] = l.visible; });
-      localStorage.setItem('layer-visibility', JSON.stringify(visibility));
-      
-      // Update URL with visible layers
-      const visibleIds = newLayers.filter(l => l.visible).map(l => l.id);
-      updateLayersUrl(visibleIds);
-      
-      return newLayers;
+    // Show the processing toast immediately so the user sees feedback.
+    setProcessingState({
+      isProcessing: true,
+      status: 'fetching',
+      title: 'Fetching scientific data…',
+      message: `Requesting ${variable} for ${date} from Copernicus Marine Service OPeNDAP…`,
     });
-    
-    // Also update activeLayer if toggling on (for colorscale reference)
-    const layerToCategory: Record<string, { categoryId: string; productId: string; variableId: string }> = {
-      'sst': { categoryId: 'ocean-temp', productId: 'sst-monthly', variableId: 'sst' },
-      'sic': { categoryId: 'ocean-ice', productId: 'sic-monthly', variableId: 'sic' },
-      'sla': { categoryId: 'ocean-ssh', productId: 'sla-daily', variableId: 'sla' },
-      'chl': { categoryId: 'ocean-bio', productId: 'chl-daily', variableId: 'chl' },
-    };
-    
-    // Set activeLayer to the toggled layer if it's being turned on
-    const layer = layers.find(l => l.id === layerId);
-    if (layer && !layer.visible && layerToCategory[layerId]) {
-      setActiveLayer(layerToCategory[layerId]);
-    }
-  }, [layers, updateLayersUrl]);
 
-  const handleBasemapChange = useCallback((id: BasemapId) => {
-    cesiumRef.current?.setBasemap(id);
-    setCurrentBasemap(id);
+    // Commit the applied state.
+    setOnlineState(prev => ({
+      ...prev,
+      datasetId,
+      variable,
+      date,
+      resolvedDate: date,
+      status: prev.status === 'error' ? 'ready' : prev.status,
+    }));
   }, []);
 
-  const handleLabelsToggle = useCallback(() => {
-    cesiumRef.current?.toggleLabels();
-    setLabelsVisible(prev => !prev);
-  }, []);
-
-  // Force re-render when cesium viewer is ready
-  useEffect(() => {
-    const checkViewer = setInterval(() => {
-      const viewer = cesiumRef.current?.viewer;
-      if (viewer && !viewer.isDestroyed() && !viewerReady) {
-        setViewerReady(true);
-        clearInterval(checkViewer);
-      }
-    }, 50);
-    return () => clearInterval(checkViewer);
-  }, [viewerReady]);
-
-  // Check on mount if a local dataset is already active on the server
-  useEffect(() => {
-    async function checkActiveDataset() {
-      try {
-        const modeData = await fetchActiveMode();
-        if (modeData.mode === 'local' && modeData.dataset) {
-          setActiveMode('local');
-          setActiveDataset(modeData.dataset);
-          setLocalVariable(modeData.dataset.default_variable || Object.keys(modeData.dataset.variables)[0] || '');
-          const ts = modeData.dataset.time_axis.timestamps;
-          if (ts && ts.length > 0) {
-            setSelectedDate(ts[0]);
-            setTimeRange({
-              total_months: 1,
-              start_date: modeData.dataset.time_axis.start_time || ts[0],
-              end_date: modeData.dataset.time_axis.end_time || ts[ts.length - 1],
-              available_dates: ts,
-              years: {},
-            });
-            setIsLoading(false);
-          }
-        }
-      } catch (err) {
-        console.warn('Could not check active dataset on start:', err);
-      }
-    }
-    checkActiveDataset();
-  }, []);
-
-  // Fetch available time range on mount and when variable changes (only when in online mode)
-  useEffect(() => {
-    if (activeMode === 'local') return;
-
-    async function loadTimeRange() {
-      try {
-        setIsLoading(true);
-        
-        // Fetch dates for current variable
-        const currentVar = activeLayer?.variableId || 'sst';
-        const data = await fetchTimeRangeForVariable(currentVar);
-        setTimeRange(data);
-        
-        // If current date not available, select best alternative
-        if (data.available_dates.length > 0) {
-          const currentAvailable = data.available_dates.includes(selectedDate);
-          if (!currentAvailable) {
-            // Priority: URL date > most recent available date
-            let dateToSelect = '';
-            if (initialUrlDate && data.available_dates.includes(initialUrlDate)) {
-              dateToSelect = initialUrlDate;
-            } else {
-              // Use most recent available date
-              dateToSelect = data.available_dates[data.available_dates.length - 1];
-            }
-            setSelectedDate(dateToSelect);
-            updateUrlState(dateToSelect);
-          }
-        }
-        
-        setError(null);
-      } catch (err) {
-        console.error('Failed to load time range:', err);
-        setError('Unable to load available dates from server.');
-        // Use MOCK_DATES as minimal fallback so UI is not empty
-        const years: Record<string, number[]> = {};
-        MOCK_DATES.forEach(date => {
-          const [year, month] = date.split('-');
-          if (!years[year]) years[year] = [];
-          years[year].push(parseInt(month, 10));
-        });
-        if (MOCK_DATES.length > 0) {
-          setTimeRange({
-            total_months: MOCK_DATES.length,
-            start_date: MOCK_DATES[0],
-            end_date: MOCK_DATES[MOCK_DATES.length - 1],
-            available_dates: MOCK_DATES,
-            years,
-          });
-          const fallbackDate = MOCK_DATES[MOCK_DATES.length - 1];
-          setSelectedDate(fallbackDate);
-          updateUrlState(fallbackDate);
-        }
-      } finally {
-        setIsLoading(false);
-      }
-    }
-    loadTimeRange();
-  }, [initialUrlDate, updateUrlState, activeLayer?.variableId, activeMode]);
-
-  const handleDatasetActivated = useCallback((dataset: DatasetInfo) => {
-    setActiveMode('local');
-    setActiveDataset(dataset);
-    setLocalVariable(dataset.default_variable || Object.keys(dataset.variables)[0] || '');
-    setLocalTimeIndex(0);
-    setLocalClick(null);
-    setIsLoading(false);
-    setError(null);
-    setColorScaleOpen(true);
-    const ts = dataset.time_axis.timestamps;
-    if (ts && ts.length > 0) {
-      setSelectedDate(ts[0]);
-      setTimeRange({
-        total_months: 1,
-        start_date: dataset.time_axis.start_time || ts[0],
-        end_date: dataset.time_axis.end_time || ts[ts.length - 1],
-        available_dates: ts,
-        years: {},
+  const handleFrameLoadingChange = useCallback((loading: boolean, error?: string | null) => {
+    if (loading) {
+      setProcessingState(prev => ({
+        ...prev,
+        isProcessing: true,
+        status: prev.status === 'idle' ? 'fetching' : prev.status,
+      }));
+    } else if (error) {
+      setProcessingState({
+        isProcessing: true,
+        status: 'error',
+        title: 'Unable to process scientific data',
+        message: error,
       });
+      setTimeout(() => {
+        setProcessingState({ isProcessing: false, status: 'idle' });
+      }, 4000);
+    } else {
+      setProcessingState({
+        isProcessing: true,
+        status: 'success',
+        title: 'Scientific data loaded',
+        message: 'Globe updated successfully.',
+      });
+      setTimeout(() => {
+        setProcessingState({ isProcessing: false, status: 'idle' });
+      }, 2000);
     }
   }, []);
 
-  const handleDatasetDeactivated = useCallback(() => {
-    setActiveMode('online');
-    setActiveDataset(null);
-    setLocalVariable('');
-    setLocalTimeIndex(0);
-    // Reload online time range
-    fetchTimeRangeForVariable('sst').then(data => {
-      setTimeRange(data);
-      if (data.available_dates.length > 0) {
-        const latestDate = data.available_dates[data.available_dates.length - 1];
-        setSelectedDate(latestDate);
-        updateUrlState(latestDate);
-      }
-    }).catch(console.error);
-  }, [updateUrlState]);
 
-  const handleDateChange = useCallback((date: string) => {
-    setSelectedDate(date);
-    updateUrlState(date);
-    if (activeMode === 'local' && activeDataset) {
-      const tsList = activeDataset.time_axis.timestamps;
-      const idx = tsList.indexOf(date);
-      if (idx >= 0) {
-        setLocalTimeIndex(idx);
-      }
-    }
-  }, [updateUrlState, activeMode, activeDataset]);
+  /* ------------------------------------------------------------------ */
+  /* TIME                                                              */
+  /* ------------------------------------------------------------------ */
 
-  // Keyboard shortcuts: Arrow keys for date, +/- for zoom
+  const [timeRange, setTimeRange] =
+    useState<TimeRange | null>(null);
+
+  const [selectedDate, setSelectedDate] =
+    useState('');
+
+  const [isLoading, setIsLoading] =
+    useState(true);
+
+  const [_error, setError] =
+    useState<string | null>(null);
+
+
+  /* ------------------------------------------------------------------ */
+  /* LAYERS                                                            */
+  /* ------------------------------------------------------------------ */
+
+  const [layers, setLayers] =
+    useState<LayerItem[]>(() => {
+
+      const params =
+        new URLSearchParams(window.location.search);
+
+      const urlLayers =
+        params.get('layers');
+
+      if (urlLayers) {
+
+        const ids =
+          urlLayers
+            .split(',')
+            .filter(Boolean);
+
+        return DEFAULT_LAYERS.map(layer => ({
+          ...layer,
+          visible: ids.includes(layer.id),
+        }));
+      }
+
+      const stored =
+        localStorage.getItem('layer-visibility');
+
+      if (stored) {
+
+        try {
+
+          const visibility =
+            JSON.parse(stored) as Record<string, boolean>;
+
+          return DEFAULT_LAYERS.map(layer => ({
+            ...layer,
+            visible:
+              visibility[layer.id] ??
+              layer.visible,
+          }));
+
+        } catch {
+          return DEFAULT_LAYERS;
+        }
+      }
+
+      return DEFAULT_LAYERS;
+    });
+
+
+  const [activeLayer, _setActiveLayer] =
+    useState<ActiveLayer>(DEFAULT_ACTIVE_LAYER);
+
+  const [_layerInfoOpen, setLayerInfoOpen] =
+    useState(false);
+
+
+  /* ------------------------------------------------------------------ */
+  /* COLOR SCALE                                                       */
+  /* ------------------------------------------------------------------ */
+
+  const [colorScaleMin, setColorScaleMin] =
+    useState(() => {
+
+      const value =
+        localStorage.getItem('sst-color-min');
+
+      return value
+        ? Number(value)
+        : -2;
+    });
+
+
+  const [colorScaleMax, setColorScaleMax] =
+    useState(() => {
+
+      const value =
+        localStorage.getItem('sst-color-max');
+
+      return value
+        ? Number(value)
+        : 35;
+    });
+
+
+  const [colormap, setColormap] =
+    useState(() =>
+      localStorage.getItem('sst-colormap') ||
+      'thermal'
+    );
+
+
+  const [colorScaleOpen, setColorScaleOpen] =
+    useState(false);
+
+
+  /* ------------------------------------------------------------------ */
+  /* THRESHOLD                                                         */
+  /* ------------------------------------------------------------------ */
+
+  const [thresholdEnabled, setThresholdEnabled] =
+    useState(false);
+
+  const [thresholdMin, setThresholdMin] =
+    useState<number | null>(null);
+
+  const [thresholdMax, setThresholdMax] =
+    useState<number | null>(null);
+
+
+  /* ------------------------------------------------------------------ */
+  /* POINT QUERY                                                       */
+  /* ------------------------------------------------------------------ */
+
+  const [clickedPosition, setClickedPosition] =
+    useState<{
+      lon: number;
+      lat: number;
+    } | null>(null);
+
+  const [_screenPosition, _setScreenPosition] =
+    useState<{
+      x: number;
+      y: number;
+    } | null>(null);
+
+  const [_sstPointData, _setSstPointData] =
+    useState<SSTPointQuery | null>(null);
+
+  const [_sstPointLoading, _setSstPointLoading] =
+    useState(false);
+
+  const [_variablePointData, _setVariablePointData] =
+    useState<VariablePointQuery | null>(null);
+
+  const [_variablePointLoading, _setVariablePointLoading] =
+    useState(false);
+
+  const [_variableScreenPosition, _setVariableScreenPosition] =
+    useState<{
+      x: number;
+      y: number;
+    } | null>(null);
+
+
+  /* ------------------------------------------------------------------ */
+  /* LOCAL ANALYSIS                                                    */
+  /* ------------------------------------------------------------------ */
+
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if typing in input
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      
-      const viewer = cesiumRef.current?.viewer;
-      
-      switch (e.key) {
-        case 'ArrowLeft':
-          // Previous date
-          if (timeRange?.available_dates) {
-            const currentIdx = timeRange.available_dates.indexOf(selectedDate);
-            if (currentIdx > 0) {
-              handleDateChange(timeRange.available_dates[currentIdx - 1]);
+
+    if (!analysisError(localAnalysis)) {
+      setValidAnalysis(localAnalysis);
+    }
+
+  }, [localAnalysis]);
+
+
+  const debouncedAnalysis =
+    useDebouncedValue(validAnalysis);
+
+
+  const localFrameStyle =
+    useMemo(() => ({
+      analysis: debouncedAnalysis,
+      colormap,
+      minVal: colorScaleMin,
+      maxVal: colorScaleMax,
+    }), [
+      debouncedAnalysis,
+      colormap,
+      colorScaleMin,
+      colorScaleMax,
+    ]);
+
+
+  /* ------------------------------------------------------------------ */
+  /* PERSIST COLOR SETTINGS                                            */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+
+    localStorage.setItem(
+      'sst-color-min',
+      String(colorScaleMin)
+    );
+
+  }, [colorScaleMin]);
+
+
+  useEffect(() => {
+
+    localStorage.setItem(
+      'sst-color-max',
+      String(colorScaleMax)
+    );
+
+  }, [colorScaleMax]);
+
+
+  useEffect(() => {
+
+    localStorage.setItem(
+      'sst-colormap',
+      colormap
+    );
+
+  }, [colormap]);
+
+
+  /* ------------------------------------------------------------------ */
+  /* ONLINE STATE CHANGE                                               */
+  /* ------------------------------------------------------------------ */
+
+  const handleOnlineStateChange =
+    useCallback(
+      (next: Partial<OnlineState>) => {
+
+        setOnlineState(prev => {
+
+          const merged = {
+            ...prev,
+            ...next,
+          };
+
+          /*
+           * IMPORTANT:
+           * When the online variable changes,
+           * use its REAL backend visualization settings.
+           */
+
+          if (
+            next.variable &&
+            next.variable !== prev.variable
+          ) {
+
+            setOnlinePointData(null);
+            setOnlinePointLoading(false);
+
+            const dataset = (next.registry ?? prev.registry)
+              .find(item => item.id === (next.datasetId ?? prev.datasetId));
+            const cfg = dataset?.variables.find(item => item.id === next.variable);
+
+            if (cfg) {
+
+              if (cfg.vmin != null) setColorScaleMin(cfg.vmin);
+              if (cfg.vmax != null) setColorScaleMax(cfg.vmax);
+
+              if (cfg.colormap) {
+                setColormap(cfg.colormap);
+              }
+
+              localStorage.setItem(
+                'sst-color-min',
+                String(cfg.vmin ?? '')
+              );
+
+              localStorage.setItem(
+                'sst-color-max',
+                String(cfg.vmax ?? '')
+              );
+
+              localStorage.setItem(
+                'sst-colormap',
+                cfg.colormap ||
+                'viridis'
+              );
             }
           }
-          break;
-        case 'ArrowRight':
-          // Next date
-          if (timeRange?.available_dates) {
-            const currentIdx = timeRange.available_dates.indexOf(selectedDate);
-            if (currentIdx < timeRange.available_dates.length - 1) {
-              handleDateChange(timeRange.available_dates[currentIdx + 1]);
-            }
-          }
-          break;
-        case '+':
-        case '=':
-          // Zoom in
-          if (viewer && !viewer.isDestroyed()) {
-            viewer.camera.zoomIn(viewer.camera.positionCartographic.height * 0.3);
-          }
-          break;
-        case '-':
-        case '_':
-          // Zoom out
-          if (viewer && !viewer.isDestroyed()) {
-            viewer.camera.zoomOut(viewer.camera.positionCartographic.height * 0.3);
-          }
-          break;
+
+          return merged;
+        });
+
+      },
+      []
+    );
+
+
+  /* ------------------------------------------------------------------ */
+  /* ACTIVE ONLINE VARIABLE SETTINGS                                   */
+  /* ------------------------------------------------------------------ */
+
+  const onlineConfig = onlineState.registry
+    .find(dataset => dataset.id === onlineState.datasetId)
+    ?.variables.find(variable => variable.id === onlineState.variable);
+
+
+  /*
+   * Backend registry is authoritative.
+   * If metadata is available, it has priority.
+   */
+
+  const effectiveMin =
+    activeMode === 'online' &&
+    onlineState.metadata
+      ? (onlineConfig?.vmin ?? colorScaleMin)
+      : colorScaleMin;
+
+
+  const effectiveMax =
+    activeMode === 'online' &&
+    onlineState.metadata
+      ? (onlineConfig?.vmax ?? colorScaleMax)
+      : colorScaleMax;
+
+
+  const effectiveColormap =
+    activeMode === 'online'
+      ? (
+          onlineConfig?.colormap ||
+          colormap
+        )
+      : colormap;
+
+
+  const effectiveUnits =
+    activeMode === 'online'
+      ? (
+          onlineConfig?.units ||
+          ''
+        )
+      : (
+          activeDataset
+            ?.variables[
+              localVariable
+            ]?.units ||
+          ''
+        );
+
+
+  /* ------------------------------------------------------------------ */
+  /* VISIBLE DATA LAYERS                                               */
+  /* ------------------------------------------------------------------ */
+
+  const normalVisibleLayers =
+    useMemo(
+      () =>
+        layers
+          .filter(layer => layer.visible)
+          .map(layer => layer.id),
+      [layers]
+    );
+
+
+  /*
+   * THIS IS THE IMPORTANT FIX.
+   *
+   * Online variables are not necessarily:
+   * sst / sic / sla / chl.
+   *
+   * They can be:
+   * uo / vo / thetao / so / zos / ...
+   *
+   * Therefore Cesium must receive the actual selected
+   * online variable.
+   */
+
+  const dataVisibleLayers =
+    activeMode === 'online'
+      ? (
+          onlineState.variable
+            ? [onlineState.variable]
+            : []
+        )
+      : normalVisibleLayers;
+
+
+  /* ------------------------------------------------------------------ */
+  /* ACTIVE DATASET CHECK                                              */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+
+    let cancelled = false;
+
+    async function checkActiveDataset() {
+
+      try {
+
+        const data =
+          await fetchActiveMode();
+
+        if (
+          cancelled ||
+          data.mode !== 'local' ||
+          !data.dataset
+        ) {
+          return;
+        }
+
+        setActiveMode('local');
+        setActiveDataset(data.dataset);
+
+        const variable =
+          data.dataset.default_variable ||
+          Object.keys(
+            data.dataset.variables
+          )[0] ||
+          '';
+
+        setLocalVariable(variable);
+
+        const timestamps =
+          data.dataset.time_axis.timestamps;
+
+        if (
+          timestamps &&
+          timestamps.length > 0
+        ) {
+
+          setSelectedDate(
+            timestamps[0]
+          );
+
+          setTimeRange({
+            total_months: 1,
+            start_date:
+              data.dataset.time_axis.start_time ||
+              timestamps[0],
+            end_date:
+              data.dataset.time_axis.end_time ||
+              timestamps[
+                timestamps.length - 1
+              ],
+            available_dates:
+              timestamps,
+            years: {},
+          });
+
+          setIsLoading(false);
+        }
+
+      } catch (err) {
+
+        console.warn(
+          'Unable to detect active local dataset:',
+          err
+        );
+
       }
+
+    }
+
+    checkActiveDataset();
+
+    return () => {
+      cancelled = true;
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedDate, timeRange, handleDateChange]);
+  }, []);
 
-  const sidebarWidth = sidebarCollapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH;
 
-  // Memoize visibleLayers to avoid unnecessary re-renders - only change when actual visibility changes
-  const visibleLayersKey = layers.filter(l => l.visible).map(l => l.id).join(',');
-  const visibleLayers = useMemo(() => {
-    const visible = visibleLayersKey.split(',').filter(Boolean);
-    return visible;
-  }, [visibleLayersKey]);
+  /* ------------------------------------------------------------------ */
+  /* ONLINE TIME RANGE                                                 */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+
+    if (activeMode === 'local') {
+      return;
+    }
+
+    if (!onlineState.variable) {
+      return;
+    }
+
+    /*
+     * OnlineControls owns the real date list.
+     *
+     * Do not call the old SST time-range API here.
+     */
+
+    if (
+      onlineState.resolvedDate &&
+      !selectedDate
+    ) {
+
+      setSelectedDate(
+        onlineState.resolvedDate
+      );
+    }
+
+  }, [
+    activeMode,
+    onlineState.variable,
+    onlineState.resolvedDate,
+    selectedDate,
+  ]);
+
+
+  /* ------------------------------------------------------------------ */
+  /* DATE CHANGE                                                       */
+  /* ------------------------------------------------------------------ */
+
+  const handleDateChange =
+    useCallback(
+      (date: string) => {
+
+        setSelectedDate(date);
+
+        if (
+          activeMode === 'local' &&
+          activeDataset
+        ) {
+
+          const index =
+            activeDataset.time_axis.timestamps
+              .indexOf(date);
+
+          if (index >= 0) {
+            setLocalTimeIndex(index);
+          }
+        }
+
+      },
+      [
+        activeMode,
+        activeDataset,
+      ]
+    );
+
+
+  /* ------------------------------------------------------------------ */
+  /* LOCAL POINT QUERY                                                 */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+
+    let cancelled = false;
+
+    if (
+      activeMode !== 'local' ||
+      !activeDataset ||
+      !localClick
+    ) {
+      return;
+    }
+
+    setLocalPointLoading(true);
+    setLocalPointError('');
+
+    fetchLocalPoint(
+      activeDataset.id,
+      localClick.lat,
+      localClick.lon,
+      localVariable,
+      localTimeIndex
+    )
+      .then(data => {
+
+        if (!cancelled) {
+          setLocalPoint(data);
+        }
+
+      })
+      .catch(err => {
+
+        if (!cancelled) {
+          setLocalPointError(
+            String(err)
+          );
+        }
+
+      })
+      .finally(() => {
+
+        if (!cancelled) {
+          setLocalPointLoading(false);
+        }
+
+      });
+
+    return () => {
+      cancelled = true;
+    };
+
+  }, [
+    activeMode,
+    activeDataset,
+    localVariable,
+    localTimeIndex,
+    localClick,
+  ]);
+
+
+  /* ------------------------------------------------------------------ */
+  /* MAP CLICK                                                         */
+  /* ------------------------------------------------------------------ */
+
+  const handleMapClick =
+    useCallback(
+      async (
+        lon: number,
+        lat: number
+      ) => {
+
+        /*
+         * LOCAL
+         */
+
+        if (
+          activeMode === 'local' &&
+          activeDataset
+        ) {
+
+          setLocalClick({
+            lat,
+            lon,
+          });
+
+          setClickedPosition({
+            lat,
+            lon,
+          });
+
+          return;
+        }
+
+
+        /*
+         * ONLINE
+         *
+         * Do NOT require selectedDate here.
+         * The online controller has its own resolved date.
+         */
+
+        if (
+          activeMode === 'online'
+        ) {
+
+          if (
+            !onlineState.variable
+          ) {
+            return;
+          }
+
+          const viewer =
+            cesiumRef.current?.viewer;
+
+          let position = null;
+
+          if (
+            viewer &&
+            !viewer.isDestroyed()
+          ) {
+
+            const cartesian =
+              Cesium.Cartesian3.fromDegrees(
+                lon,
+                lat
+              );
+
+            const screen =
+              Cesium.SceneTransforms
+                .worldToWindowCoordinates(
+                  viewer.scene,
+                  cartesian
+                );
+
+            if (screen) {
+              position = {
+                x: screen.x,
+                y: screen.y,
+              };
+            }
+          }
+
+          setClickedPosition({
+            lon,
+            lat,
+          });
+
+          setOnlineScreenPosition(
+            position
+          );
+
+          setOnlinePointLoading(true);
+          setOnlinePointData(null);
+          setProcessingState({
+            isProcessing: true,
+            status: 'fetching',
+            title: 'Fetching scientific observation…',
+            message: `Querying nearest native ocean grid point for ${onlineState.variable}…`,
+          });
+
+          try {
+
+            const date =
+              onlineState.resolvedDate ||
+              onlineState.date ||
+              'latest';
+
+            const result =
+              await fetchOnlinePoint(
+                onlineState.datasetId,
+                onlineState.variable,
+                date,
+                lon,
+                lat
+              );
+
+            setOnlinePointData(
+              result
+            );
+
+            setProcessingState({
+              isProcessing: false,
+              status: 'idle',
+            });
+
+          } catch (err) {
+
+            console.error(
+              '[YARA] Online point query failed:',
+              err
+            );
+
+            setOnlinePointData(null);
+            setProcessingState({
+              isProcessing: false,
+              status: 'idle',
+            });
+
+          } finally {
+
+            setOnlinePointLoading(false);
+
+          }
+
+          return;
+        }
+
+      },
+      [
+        activeMode,
+        activeDataset,
+        onlineState.variable,
+        onlineState.datasetId,
+        onlineState.resolvedDate,
+        onlineState.date,
+      ]
+    );
+
+
+  /* ------------------------------------------------------------------ */
+  /* VIEWER READY                                                      */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+
+    const timer =
+      window.setInterval(() => {
+
+        const viewer =
+          cesiumRef.current?.viewer;
+
+        if (
+          viewer &&
+          !viewer.isDestroyed()
+        ) {
+
+          setViewerReady(true);
+
+          window.clearInterval(timer);
+        }
+
+      }, 50);
+
+    return () =>
+      window.clearInterval(timer);
+
+  }, []);
+
+
+  /* ------------------------------------------------------------------ */
+  /* CAMERA                                                            */
+  /* ------------------------------------------------------------------ */
+
+  const [
+    currentCameraPosition,
+    setCurrentCameraPosition,
+  ] = useState({
+    lat: 0,
+    lon: 0,
+    height: 10000000,
+  });
+
+
+  const handleCameraChange =
+    useCallback(
+      (
+        lon: number,
+        lat: number,
+        height: number
+      ) => {
+
+        setCurrentCameraPosition({
+          lat,
+          lon,
+          height,
+        });
+
+      },
+      []
+    );
+
+
+  /* ------------------------------------------------------------------ */
+  /* BASEMAP                                                           */
+  /* ------------------------------------------------------------------ */
+
+  const handleBasemapChange =
+    useCallback(
+      (id: BasemapId) => {
+
+        cesiumRef.current?.setBasemap(id);
+
+        setCurrentBasemap(id);
+
+      },
+      []
+    );
+
+
+  /* ------------------------------------------------------------------ */
+  /* LABELS                                                            */
+  /* ------------------------------------------------------------------ */
+
+  const handleLabelsToggle =
+    useCallback(() => {
+
+      cesiumRef.current?.toggleLabels();
+
+      setLabelsVisible(
+        value => !value
+      );
+
+    }, []);
+
+
+  /* ------------------------------------------------------------------ */
+  /* LAYER TOGGLE                                                      */
+  /* ------------------------------------------------------------------ */
+
+  const handleToggleLayer =
+    useCallback(
+      (layerId: string) => {
+
+        setLayers(prev => {
+
+          const next =
+            prev.map(layer =>
+              layer.id === layerId
+                ? {
+                    ...layer,
+                    visible:
+                      !layer.visible,
+                  }
+                : layer
+            );
+
+          const visibility:
+            Record<string, boolean> = {};
+
+          next.forEach(layer => {
+            visibility[
+              layer.id
+            ] = layer.visible;
+          });
+
+          localStorage.setItem(
+            'layer-visibility',
+            JSON.stringify(
+              visibility
+            )
+          );
+
+          return next;
+        });
+
+      },
+      []
+    );
+
+
+  /* ------------------------------------------------------------------ */
+  /* DATASET ACTIVATION                                                */
+  /* ------------------------------------------------------------------ */
+
+  const handleDatasetActivated =
+    useCallback(
+      (dataset: DatasetInfo) => {
+
+        setActiveMode('local');
+
+        setActiveDataset(dataset);
+
+        setLocalVariable(
+          dataset.default_variable ||
+          Object.keys(
+            dataset.variables
+          )[0] ||
+          ''
+        );
+
+        setLocalTimeIndex(0);
+
+        setLocalClick(null);
+
+        setIsLoading(false);
+
+        setError(null);
+
+      },
+      []
+    );
+
+
+  const handleDatasetDeactivated =
+    useCallback(
+      async () => {
+
+        setActiveMode('online');
+
+        setActiveDataset(null);
+
+        setLocalVariable('');
+
+        setLocalTimeIndex(0);
+
+        setLocalClick(null);
+
+        setOnlinePointData(null);
+
+        setSelectedDate('');
+
+      },
+      []
+    );
+
+
+
+
+
+  /* ------------------------------------------------------------------ */
+  /* SIDEBAR                                                            */
+  /* ------------------------------------------------------------------ */
+
+  const sidebarWidth =
+    sidebarCollapsed
+      ? SIDEBAR_WIDTH_COLLAPSED
+      : SIDEBAR_WIDTH;
+
+
+  /* ------------------------------------------------------------------ */
+  /* RETURN                                                            */
+  /* ------------------------------------------------------------------ */
 
   return (
-    <Box sx={{ 
-      position: 'fixed', 
-      top: 0, 
-      left: 0, 
-      right: 0, 
-      bottom: 0, 
-      width: '100vw', 
-      height: '100vh', 
-      overflow: 'hidden' 
-    }}>
-      {/* Globe - Full screen background */}
-      <CesiumViewer 
-        ref={cesiumRef} 
-        selectedDate={selectedDate} 
-        isLoading={isLoading} 
-        initialBasemap={currentBasemap}
-        onMapClick={handleMapClick}
-        clickedPosition={clickedPosition}
-        colorScaleMin={colorScaleMin}
-        colorScaleMax={colorScaleMax}
+    <Box
+      sx={{
+        position: 'fixed',
+        inset: 0,
+        width: '100vw',
+        height: '100vh',
+        overflow: 'hidden',
+      }}
+    >
+
+      {/* ============================================================ */}
+      {/* CESIUM GLOBE                                                 */}
+      {/* ============================================================ */}
+
+      <CesiumViewer
+        ref={cesiumRef}
+
+        selectedDate={
+          activeMode === 'online'
+            ? (
+                onlineState.resolvedDate ||
+                onlineState.date ||
+                ''
+              )
+            : selectedDate
+        }
+
+        isLoading={
+          activeMode === 'online'
+            ? onlineState.status === 'loading'
+            : isLoading
+        }
+
+        initialBasemap={
+          currentBasemap
+        }
+
+        onMapClick={
+          handleMapClick
+        }
+
+        clickedPosition={
+          clickedPosition
+        }
+
+        /*
+         * Use the effective backend values.
+         */
+
+        colorScaleMin={
+          effectiveMin
+        }
+
+        colorScaleMax={
+          effectiveMax
+        }
+
+        colormap={
+          effectiveColormap
+        }
+
+        activeVariable={
+          activeMode === 'online'
+            ? (
+                onlineState.variable ||
+                'sst'
+              )
+            : (
+                localVariable ||
+                activeLayer.variableId ||
+                'sst'
+              )
+        }
+
+        /*
+         * IMPORTANT:
+         * online => actual selected variable
+         * local  => normal layer list
+         */
+
+        visibleLayers={
+          dataVisibleLayers
+        }
+
         drawingMode={false}
+
         onBboxDrawn={() => {}}
-        activeVariable={activeLayer?.variableId || 'sst'}
-        visibleLayers={visibleLayers}
-        initialCamera={initialCamera}
-        onCameraChange={handleCameraChange}
-        thresholdEnabled={thresholdEnabled}
-        thresholdMin={thresholdMin}
-        thresholdMax={thresholdMax}
-        activeMode={activeMode}
-        activeDataset={activeDataset}
-        localVariable={localVariable}
-        localTimeIndex={localTimeIndex}
-        localAnalysis={debouncedAnalysis}
-        localGridEnabled={localGridEnabled}
-        colormap={colormap}
+
+        thresholdEnabled={
+          thresholdEnabled
+        }
+
+        thresholdMin={
+          thresholdMin
+        }
+
+        thresholdMax={
+          thresholdMax
+        }
+
+        activeMode={
+          activeMode
+        }
+
+        activeDataset={
+          activeDataset
+        }
+
+        localVariable={
+          localVariable
+        }
+
+        localTimeIndex={
+          localTimeIndex
+        }
+
+        localAnalysis={
+          debouncedAnalysis
+        }
+
+        localGridEnabled={
+          localGridEnabled
+        }
+
+        onlineVariable={
+          onlineState.variable
+        }
+
+        onlineDatasetId={
+          onlineState.datasetId
+        }
+
+        onlineDate={
+          onlineState.resolvedDate ||
+          onlineState.date ||
+          'latest'
+        }
+
+        onCameraChange={
+          handleCameraChange
+        }
+
+        onFrameLoadingChange={
+          handleFrameLoadingChange
+        }
+
       />
 
-      {activeMode === 'local' && activeDataset && <>
-        <LocalAnalysisStatus datasetId={activeDataset.id} variable={localVariable} index={localTimeIndex} style={localFrameStyle} />
-        <LocalPointInfoPanel data={localPoint} loading={localPointLoading} error={localPointError}
-          onClose={() => { setLocalClick(null); setClickedPosition(null); }} />
-      </>}
 
-      {/* Bounding Box Drawing Overlay */}
-      <BboxDrawingOverlay
-        active={isDrawingBbox}
-        onComplete={(bbox: BoundingBox) => {
-          setDrawnBbox(bbox);
-          setIsDrawingBbox(false);
-        }}
-        onCancel={() => {
-          setIsDrawingBbox(false);
-        }}
-        initialBbox={drawnBbox}
-        viewer={cesiumRef.current?.viewer || null}
-      />
+      {/* ============================================================ */}
+      {/* ONLINE CONTROLS                                              */}
+      {/* ============================================================ */}
 
-      {/* Download Panel */}
-      {downloadPanelOpen && (
-        <DownloadPanel
-          bbox={drawnBbox}
-          selectedDate={selectedDate}
-          variable={activeLayer?.variableId || 'sst'}
-          onClose={() => {
-            setDownloadPanelOpen(false);
-            setDrawnBbox(null);
-          }}
-          onStartDrawing={() => setIsDrawingBbox(true)}
-          isDrawingMode={isDrawingBbox}
+      {activeMode === 'online' && (
+
+        <OnlineControls
+          state={
+            onlineState
+          }
+
+          onChange={
+            handleOnlineStateChange
+          }
+
+          onApply={
+            handleOnlineApply
+          }
+
+          frameLoading={
+            onlinePointLoading
+          }
         />
+
       )}
 
-      {/* Map Controls - Bottom right (only when viewer ready) */}
-      {viewerReady && cesiumRef.current && (
-        <MapControls
-          viewer={cesiumRef.current.viewer}
-          currentBasemap={currentBasemap}
-          onBasemapChange={handleBasemapChange}
-          bottomOffset={timelineCollapsed ? 80 : 210}
-          colorScaleOpen={colorScaleOpen}
-          onColorScaleToggle={() => setColorScaleOpen(!colorScaleOpen)}
-          onStartDrawing={() => {
-            // Close info panels if open
-            handleCloseSstPanel();
-            handleCloseVariablePanel();
-            setIsDrawingBbox(true);
-            setDownloadPanelOpen(true);
-          }}
-          isDrawingMode={isDrawingBbox}
-          labelsVisible={labelsVisible}
-          onLabelsToggle={handleLabelsToggle}
-        />
-      )}
 
-      {/* Mouse Coordinates - Bottom left */}
-      {viewerReady && cesiumRef.current && (
-        <MouseCoordinates
-          viewer={cesiumRef.current.viewer}
-          bottomOffset={timelineCollapsed ? 56 : 186}
-          leftOffset={sidebarWidth + 24}
-        />
-      )}
+      {/* ============================================================ */}
+      {/* ONLINE POINT PANEL                                           */}
+      {/* ============================================================ */}
 
-      {/* Color Scale Controls - Bottom right, above map controls */}
-      {colorScaleOpen && (
-        <ColorScaleControls
-          localAnalysis={activeMode === 'local' ? { value: localAnalysis, onChange: setLocalAnalysis,
-            gridEnabled: localGridEnabled, onGridChange: setLocalGridEnabled,
-            units: activeDataset?.variables[localVariable]?.units } : undefined}
-          minTemp={colorScaleMin}
-          maxTemp={colorScaleMax}
-          colormap={colormap}
-          onMinTempChange={setColorScaleMin}
-          onMaxTempChange={setColorScaleMax}
-          onColormapChange={setColormap}
-          bottomOffset={timelineCollapsed ? 130 : 260}
-          thresholdEnabled={thresholdEnabled}
-          thresholdMin={thresholdMin}
-          thresholdMax={thresholdMax}
-          onThresholdEnabledChange={setThresholdEnabled}
-          onThresholdMinChange={setThresholdMin}
-          onThresholdMaxChange={setThresholdMax}
-        />
-      )}
+      {activeMode === 'online' &&
+        (
+          onlinePointData ||
+          onlinePointLoading
+        ) && (
 
-      {/* Analytics Panel - Fullscreen variable browser */}
-      <AnalyticsPanel 
-        open={analyticsPanelOpen} 
-        onClose={handleCloseAnalytics} 
-      />
+          <OnlinePointInfoPanel
+            data={
+              onlinePointData
+            }
 
-      {/* Settings Panel */}
-      <SettingsPanel
-        open={settingsPanelOpen}
-        onClose={handleCloseSettings}
-      />
+            loading={
+              onlinePointLoading
+            }
 
-      {/* About Panel */}
-      <AboutPanel
-        open={aboutPanelOpen}
-        onClose={handleCloseAbout}
-      />
+            screenPosition={
+              onlineScreenPosition
+            }
 
-      {/* Data Provenance Panel */}
-      <DataProvenancePage
-        open={dataProvenanceOpen}
-        onClose={handleCloseDataProvenance}
-      />
+            onClose={() => {
 
-      {/* Terms of Use Panel */}
-      <TermsOfUsePage
-        open={termsOpen}
-        onClose={handleCloseTerms}
-      />
+              setOnlinePointData(null);
+              setOnlinePointLoading(false);
+              setClickedPosition(null);
+              setOnlineScreenPosition(null);
 
-      {/* Bookmarks Panel */}
-      <BookmarksPanel
-        open={bookmarksPanelOpen}
-        onClose={handleCloseBookmarks}
-        currentLat={currentCameraPosition.lat}
-        currentLon={currentCameraPosition.lon}
-        currentHeight={currentCameraPosition.height}
-        currentDate={selectedDate}
-        currentLayers={visibleLayers}
-        currentBasemap={currentBasemap}
-        onLoadBookmark={handleLoadBookmark}
-      />
-
-      {/* SST Point Query Panel */}
-      <SSTInfoPanel
-        data={activeMode === 'online' ? sstPointData : null}
-        loading={activeMode === 'online' && sstPointLoading}
-        onClose={handleCloseSstPanel}
-        screenPosition={screenPosition}
-      />
-
-      {/* Variable (SIC/SLA) Point Query Panel */}
-      <VariableInfoPanel
-        data={activeMode === 'online' ? variablePointData : null}
-        loading={activeMode === 'online' && variablePointLoading}
-        onClose={handleCloseVariablePanel}
-        screenPosition={variableScreenPosition}
-        topOffset={(sstPointData || sstPointLoading) ? 420 : 0}
-      />
-
-      {/* Data Layers Panel - with download, info, and details */}
-      <LayersPanelPopup
-        open={layersPanelOpen}
-        onClose={() => setLayersPanelOpen(false)}
-        layers={layers}
-        onToggleLayer={handleToggleLayer}
-        anchorTop={64}
-        anchorLeft={sidebarWidth + 20}
-        selectedDate={selectedDate}
-        onOpenInfo={() => setLayerInfoOpen(true)}
-        onStartDrawing={() => {
-          handleCloseSstPanel();
-          handleCloseVariablePanel();
-          setIsDrawingBbox(true);
-        }}
-        drawnBbox={drawnBbox}
-        isDrawingMode={isDrawingBbox}
-        onOpenCatalog={() => {
-          setLayersPanelOpen(false);
-          handleOpenAnalytics();
-        }}
-      />
-
-      {/* Layer Browser - Variable catalog (hidden for now, accessible via LayersPanelPopup) */}
-      {/* <LayerBrowser
-        open={layersPanelOpen}
-        onClose={() => setLayersPanelOpen(false)}
-        anchorTop={64}
-        anchorLeft={sidebarWidth + 20}
-        selectedDate={selectedDate}
-        activeLayer={activeLayer}
-        onLayerSelect={setActiveLayer}
-        colorScaleMin={colorScaleMin}
-        colorScaleMax={colorScaleMax}
-        colormap={colormap}
-        onOpenInfo={() => setLayerInfoOpen(true)}
-        showLayerList={showLayerList}
-        onToggleLayerList={() => setShowLayerList(!showLayerList)}
-        onStartDrawing={() => {
-          // Close SST panel if open
-          handleCloseSstPanel();
-          setIsDrawingBbox(true);
-        }}
-        drawnBbox={drawnBbox}
-        isDrawingMode={isDrawingBbox}
-      /> */}
-
-      {/* Layer Info Dialog */}
-      <LayerInfoDialog
-        open={layerInfoOpen}
-        onClose={() => setLayerInfoOpen(false)}
-        variable={activeLayer?.variableId || 'sst'}
-        layerName="Sea Surface Temperature"
-      />
-
-      {/* Floating Header */}
-      <Header
-        activeDataset={activeDataset}
-        activeMode={activeMode}
-        onOpenLocalModal={() => setLocalModalOpen(true)}
-        onSwitchToOnline={handleDatasetDeactivated}
-      />
-
-      {/* Local Dataset Ingestion & Inspection Modal */}
-      <LocalDatasetModal
-        open={localModalOpen}
-        onClose={() => setLocalModalOpen(false)}
-        activeDataset={activeDataset}
-        onDatasetActivated={handleDatasetActivated}
-        onDatasetDeactivated={handleDatasetDeactivated}
-      />
-
-      {/* Floating Variable Selector for Local Multi-Variable Datasets */}
-      {activeMode === 'local' && activeDataset && (
-        <Box sx={{ position: 'absolute', top: 58, right: 12, zIndex: 1000 }}>
-          <DatasetVariableSelector
-            dataset={activeDataset}
-            selectedVariable={localVariable}
-            onSelectVariable={variable => { setLocalVariable(variable); setLocalTimeIndex(0); }}
-          />
-        </Box>
-      )}
-
-      {/* Floating Playback Controls for Multi-Frame Datasets */}
-      {activeMode === 'local' && activeDataset && activeDataset.time_axis.count > 1 && activeDataset.variables[localVariable]?.has_time && (
-        <Box sx={{ position: 'absolute', bottom: 85, left: sidebarWidth + 20, zIndex: 1000 }}>
-          <PlaybackControls
-            timestamps={activeDataset.time_axis.timestamps}
-            currentIndex={localTimeIndex}
-            onIndexChange={(idx) => {
-              setLocalTimeIndex(idx);
-              const ts = activeDataset.time_axis.timestamps[idx];
-              if (ts) {
-                setSelectedDate(ts);
-                updateUrlState(ts);
-              }
             }}
-            datasetId={activeDataset.id}
-            variable={localVariable}
-            resolution={activeDataset.time_axis.resolution}
-            frameStyle={localFrameStyle}
-            frameCount={activeDataset.time_axis.count}
           />
-        </Box>
+
       )}
 
-      {/* Floating Sidebar */}
+
+      {/* ============================================================ */}
+      {/* LOCAL MODE                                                    */}
+      {/* ============================================================ */}
+
+      {activeMode === 'local' &&
+        activeDataset && (
+
+          <>
+            <LocalAnalysisStatus
+              datasetId={
+                activeDataset.id
+              }
+
+              variable={
+                localVariable
+              }
+
+              index={
+                localTimeIndex
+              }
+
+              style={
+                localFrameStyle
+              }
+            />
+
+            <LocalPointInfoPanel
+              data={
+                localPoint
+              }
+
+              loading={
+                localPointLoading
+              }
+
+              error={
+                localPointError
+              }
+
+              onClose={() => {
+
+                setLocalClick(null);
+                setClickedPosition(null);
+
+              }}
+            />
+          </>
+
+      )}
+
+
+      {/* ============================================================ */}
+      {/* COLOR SCALE                                                  */}
+      {/* ============================================================ */}
+
+      {colorScaleOpen && (
+
+        <ColorScaleControls
+
+          minTemp={
+            effectiveMin
+          }
+
+          maxTemp={
+            effectiveMax
+          }
+
+          colormap={
+            effectiveColormap
+          }
+
+          onMinTempChange={
+            setColorScaleMin
+          }
+
+          onMaxTempChange={
+            setColorScaleMax
+          }
+
+          onColormapChange={
+            setColormap
+          }
+
+          units={
+            effectiveUnits
+          }
+
+          bottomOffset={
+            timelineCollapsed
+              ? 130
+              : 260
+          }
+
+          thresholdEnabled={
+            thresholdEnabled
+          }
+
+          thresholdMin={
+            thresholdMin
+          }
+
+          thresholdMax={
+            thresholdMax
+          }
+
+          onThresholdEnabledChange={
+            setThresholdEnabled
+          }
+
+          onThresholdMinChange={
+            setThresholdMin
+          }
+
+          onThresholdMaxChange={
+            setThresholdMax
+          }
+
+          localAnalysis={
+            activeMode === 'local'
+              ? {
+                  value:
+                    localAnalysis,
+
+                  onChange:
+                    setLocalAnalysis,
+
+                  gridEnabled:
+                    localGridEnabled,
+
+                  onGridChange:
+                    setLocalGridEnabled,
+
+                  units:
+                    activeDataset
+                      ?.variables[
+                        localVariable
+                      ]?.units,
+                }
+              : undefined
+          }
+        />
+
+      )}
+
+
+      {/* ============================================================ */}
+      {/* MAP CONTROLS                                                 */}
+      {/* ============================================================ */}
+
+      {viewerReady &&
+        cesiumRef.current && (
+
+          <MapControls
+            viewer={
+              cesiumRef.current.viewer
+            }
+
+            currentBasemap={
+              currentBasemap
+            }
+
+            onBasemapChange={
+              handleBasemapChange
+            }
+
+            bottomOffset={
+              timelineCollapsed
+                ? 80
+                : 210
+            }
+
+            colorScaleOpen={
+              colorScaleOpen
+            }
+
+            onColorScaleToggle={() =>
+              setColorScaleOpen(
+                value => !value
+              )
+            }
+
+            onStartDrawing={() => {}}
+
+            isDrawingMode={
+              false
+            }
+
+            labelsVisible={
+              labelsVisible
+            }
+
+            onLabelsToggle={
+              handleLabelsToggle
+            }
+          />
+
+      )}
+
+
+      {/* ============================================================ */}
+      {/* COORDINATES                                                  */}
+      {/* ============================================================ */}
+
+      {viewerReady &&
+        cesiumRef.current && (
+
+          <MouseCoordinates
+            viewer={
+              cesiumRef.current.viewer
+            }
+
+            bottomOffset={
+              timelineCollapsed
+                ? 56
+                : 186
+            }
+
+            leftOffset={
+              sidebarWidth + 24
+            }
+          />
+
+      )}
+
+
+      {/* ============================================================ */}
+      {/* TIME SLIDER                                                  */}
+      {/* ============================================================ */}
+
+      <Box
+        sx={{
+          position: 'absolute',
+          bottom: 12,
+          left: 12,
+          right: 12,
+          bgcolor:
+            'rgba(8,12,18,0.85)',
+          backdropFilter:
+            'blur(16px)',
+          zIndex: 1000,
+        }}
+      >
+
+        <TimeSlider
+
+          availableDates={
+            activeMode === 'online'
+              ? (
+                  onlineState.availableDates
+                    ?.length
+                    ? onlineState.availableDates
+                    : (
+                        onlineState.resolvedDate
+                          ? [
+                              onlineState.resolvedDate,
+                            ]
+                          : []
+                      )
+                )
+              : (
+                  timeRange
+                    ?.available_dates
+                    ?.length
+                    ? timeRange.available_dates
+                    : MOCK_DATES
+                )
+          }
+
+          selectedDate={
+            activeMode === 'online'
+              ? (
+                  onlineState.date === 'latest'
+                    ? (
+                        onlineState.resolvedDate ||
+                        'latest'
+                      )
+                    : onlineState.date
+                )
+              : (
+                  selectedDate ||
+                  MOCK_DATES[
+                    MOCK_DATES.length - 1
+                  ]
+                )
+          }
+
+          onDateChange={
+            date => {
+
+              if (
+                activeMode === 'online'
+              ) {
+
+                handleOnlineStateChange({
+                  date,
+                  resolvedDate:
+                    date,
+                });
+
+              } else {
+
+                handleDateChange(
+                  date
+                );
+
+              }
+
+            }
+          }
+
+          isLoading={
+            activeMode === 'online'
+              ? onlineState.status === 'loading'
+              : isLoading
+          }
+
+          collapsed={
+            timelineCollapsed
+          }
+
+          onToggleCollapsed={() => {
+
+            const value =
+              !timelineCollapsed;
+
+            setTimelineCollapsed(
+              value
+            );
+
+            localStorage.setItem(
+              'timeline-collapsed',
+              String(value)
+            );
+
+          }}
+        />
+
+      </Box>
+
+
+      {/* ============================================================ */}
+      {/* HEADER                                                       */}
+      {/* ============================================================ */}
+
+      <Header
+
+        activeDataset={
+          activeDataset
+        }
+
+        activeMode={
+          activeMode
+        }
+
+        onOpenLocalModal={() =>
+          setLocalModalOpen(true)
+        }
+
+        onSwitchToOnline={
+          handleDatasetDeactivated
+        }
+      />
+
+
+      {/* ============================================================ */}
+      {/* LOCAL DATASET MODAL                                          */}
+      {/* ============================================================ */}
+
+      <LocalDatasetModal
+
+        open={
+          localModalOpen
+        }
+
+        onClose={() =>
+          setLocalModalOpen(false)
+        }
+
+        activeDataset={
+          activeDataset
+        }
+
+        onDatasetActivated={
+          handleDatasetActivated
+        }
+
+        onDatasetDeactivated={
+          handleDatasetDeactivated
+        }
+      />
+
+
+      {/* ============================================================ */}
+      {/* LOCAL VARIABLE SELECTOR                                      */}
+      {/* ============================================================ */}
+
+      {activeMode === 'local' &&
+        activeDataset && (
+
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 58,
+              right: 12,
+              zIndex: 1000,
+            }}
+          >
+
+            <DatasetVariableSelector
+
+              dataset={
+                activeDataset
+              }
+
+              selectedVariable={
+                localVariable
+              }
+
+              onSelectVariable={
+                variable => {
+
+                  setLocalVariable(
+                    variable
+                  );
+
+                  setLocalTimeIndex(
+                    0
+                  );
+
+                }
+              }
+            />
+
+          </Box>
+
+      )}
+
+
+      {/* ============================================================ */}
+      {/* SIDEBAR                                                      */}
+      {/* ============================================================ */}
+
       <Box
         sx={{
           position: 'absolute',
@@ -1039,78 +1934,221 @@ export function Layout() {
           left: 12,
           bottom: 80,
           width: sidebarWidth,
-          bgcolor: 'rgba(8, 12, 18, 0.85)',
-          backdropFilter: 'blur(16px)',
-          borderRadius: 0,
-          border: '1px solid rgba(255,255,255,0.04)',
-          overflow: 'hidden',
-          transition: 'width 0.2s ease',
+          bgcolor:
+            'rgba(8,12,18,0.85)',
+          backdropFilter:
+            'blur(16px)',
           zIndex: 1000,
         }}
       >
+
         <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
-          onOpenLayers={() => setLayersPanelOpen(!layersPanelOpen)}
-          onOpenAnalytics={handleOpenAnalytics}
-          onFlyHome={() => cesiumRef.current?.flyHome()}
-          onOpenSettings={handleOpenSettings}
-          onOpenAbout={handleOpenAbout}
-          onOpenBookmarks={handleOpenBookmarks}
+
+          collapsed={
+            sidebarCollapsed
+          }
+
+          onToggle={() =>
+            setSidebarCollapsed(
+              value => !value
+            )
+          }
+
+          onOpenLayers={() =>
+            setLayersPanelOpen(
+              value => !value
+            )
+          }
+
+          onOpenAnalytics={() =>
+            setAnalyticsPanelOpen(
+              true
+            )
+          }
+
+          onFlyHome={() =>
+            cesiumRef.current?.flyHome()
+          }
+
+          onOpenSettings={() =>
+            setSettingsPanelOpen(
+              true
+            )
+          }
+
+          onOpenAbout={() =>
+            setAboutPanelOpen(
+              true
+            )
+          }
+
+          onOpenBookmarks={() =>
+            setBookmarksPanelOpen(
+              true
+            )
+          }
         />
+
       </Box>
 
-      {/* Error overlay */}
-      {error && (
-        <Box
-          sx={{
-            position: 'absolute',
-            top: 72,
-            left: sidebarWidth + 24,
-            bgcolor: 'rgba(183, 28, 28, 0.9)',
-            color: 'white',
-            px: 2,
-            py: 1,
-            borderRadius: 0,
-            fontSize: '0.8125rem',
-            zIndex: 1000,
-          }}
-        >
-          {error}
-        </Box>
-      )}
 
-      {/* Floating Time Slider Panel - Bottom */}
-      <Box
-        sx={{
-          position: 'absolute',
-          bottom: 12,
-          left: 12,
-          right: 12,
-          bgcolor: 'rgba(8, 12, 18, 0.85)',
-          backdropFilter: 'blur(16px)',
-          borderRadius: 0,
-          border: '1px solid rgba(255,255,255,0.04)',
-          overflow: 'hidden',
-          zIndex: 1000,
+      {/* ============================================================ */}
+      {/* LAYERS PANEL                                                 */}
+      {/* ============================================================ */}
+
+      <LayersPanelPopup
+
+        open={
+          layersPanelOpen
+        }
+
+        onClose={() =>
+          setLayersPanelOpen(false)
+        }
+
+        layers={
+          layers
+        }
+
+        onToggleLayer={
+          handleToggleLayer
+        }
+
+        anchorTop={64}
+
+        anchorLeft={
+          sidebarWidth + 20
+        }
+
+        selectedDate={
+          selectedDate
+        }
+
+        onOpenInfo={() =>
+          setLayerInfoOpen(true)
+        }
+
+        onStartDrawing={() => {}}
+
+        drawnBbox={null}
+
+        isDrawingMode={
+          false
+        }
+
+        onOpenCatalog={() => {
+
+          setLayersPanelOpen(
+            false
+          );
+
+          setAnalyticsPanelOpen(
+            true
+          );
+
         }}
-      >
-        <TimeSlider
-          availableDates={timeRange?.available_dates?.length ? timeRange.available_dates : MOCK_DATES}
-          selectedDate={selectedDate || MOCK_DATES[MOCK_DATES.length - 1]}
-          onDateChange={handleDateChange}
-          isLoading={isLoading}
-          collapsed={timelineCollapsed}
-          onToggleCollapsed={() => {
-            const newValue = !timelineCollapsed;
-            setTimelineCollapsed(newValue);
-            localStorage.setItem('timeline-collapsed', String(newValue));
-          }}
-        />
-      </Box>
+      />
 
-      {/* Footer */}
+
+      {/* ============================================================ */}
+      {/* PANELS                                                       */}
+      {/* ============================================================ */}
+
+      <AnalyticsPanel
+        open={
+          analyticsPanelOpen
+        }
+        onClose={() =>
+          setAnalyticsPanelOpen(false)
+        }
+      />
+
+      <SettingsPanel
+        open={
+          settingsPanelOpen
+        }
+        onClose={() =>
+          setSettingsPanelOpen(false)
+        }
+      />
+
+      <AboutPanel
+        open={
+          aboutPanelOpen
+        }
+        onClose={() =>
+          setAboutPanelOpen(false)
+        }
+      />
+
+      <DataProvenancePage
+        open={
+          dataProvenanceOpen
+        }
+        onClose={() =>
+          setDataProvenanceOpen(false)
+        }
+      />
+
+      <TermsOfUsePage
+        open={
+          termsOpen
+        }
+        onClose={() =>
+          setTermsOpen(false)
+        }
+      />
+
+      <BookmarksPanel
+
+        open={
+          bookmarksPanelOpen
+        }
+
+        onClose={() =>
+          setBookmarksPanelOpen(false)
+        }
+
+        currentLat={
+          currentCameraPosition.lat
+        }
+
+        currentLon={
+          currentCameraPosition.lon
+        }
+
+        currentHeight={
+          currentCameraPosition.height
+        }
+
+        currentDate={
+          selectedDate
+        }
+
+        currentLayers={
+          normalVisibleLayers
+        }
+
+        currentBasemap={
+          currentBasemap
+        }
+
+        onLoadBookmark={
+          (_bookmark: Bookmark) => {}
+        }
+      />
+
+
+
+
+      {/* ============================================================ */}
+      {/* FOOTER                                                       */}
+      {/* ============================================================ */}
+
+      <ScientificProcessingToast state={processingState} />
+
       <Footer />
+
     </Box>
   );
 }

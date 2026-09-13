@@ -623,7 +623,7 @@ class TestDatasetConfig:
         
         datasets_path = Path(__file__).parent.parent / "server" / "datasets.json"
         
-        with open(datasets_path) as f:
+        with open(datasets_path, encoding="utf-8") as f:
             datasets = json.load(f)
         
         assert isinstance(datasets, dict)
@@ -635,7 +635,7 @@ class TestDatasetConfig:
         
         datasets_path = Path(__file__).parent.parent / "server" / "datasets.json"
         
-        with open(datasets_path) as f:
+        with open(datasets_path, encoding="utf-8") as f:
             datasets = json.load(f)
         
         for var_name, var_config in datasets.items():
@@ -647,7 +647,7 @@ class TestDatasetConfig:
         
         datasets_path = Path(__file__).parent.parent / "server" / "datasets.json"
         
-        with open(datasets_path) as f:
+        with open(datasets_path, encoding="utf-8") as f:
             datasets = json.load(f)
         
         for var_name, var_config in datasets.items():

@@ -1,4 +1,4 @@
-﻿import {
+import {
   Box,
   List,
   ListItem,

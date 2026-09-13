@@ -88,7 +88,7 @@ export function Header({
               mt: 0.25,
             }}
           >
-            Physics & Biogeochem
+            Yielding Analysis of Reconstructing the Abyss
           </Typography>
         </Box>
 
@@ -117,7 +117,7 @@ export function Header({
           ) : (
             <Chip
               icon={<CloudQueueIcon sx={{ fontSize: '13px !important', color: '#00e676 !important' }} />}
-              label="ONLINE: NOAA OISST"
+              label="ONLINE: Copernicus Marine Service"
               size="small"
               sx={{
                 bgcolor: 'rgba(0, 230, 118, 0.1)',

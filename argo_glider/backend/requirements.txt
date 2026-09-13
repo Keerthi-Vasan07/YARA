@@ -1,0 +1,8 @@
+
+fastapi
+uvicorn
+pandas
+requests
+truststore
+xarray
+netCDF4

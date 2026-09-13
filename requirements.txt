@@ -1,39 +1,45 @@
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
-xarray[complete]
-gcsfs
-numpy
 pydantic>=2.0
 pydantic-settings>=2.0
+numpy
 scipy
-cmocean
+Pillow
+
+# OPeNDAP / online data access
+xarray[complete]
+pydap>=3.4           # OPeNDAP backend for xarray
+pandas               # timestamp decoding in erddap_opendap.py
+netCDF4
+h5py
 
 # COG pipeline
 rasterio
-h5py
-netCDF4
-Pillow
+
+# Colormaps
+cmocean
+
+# Cloud storage
+gcsfs
+azure-storage-blob>=12.19.0
+azure-identity>=1.15.0
+adlfs>=2024.2.0       # fsspec Azure support for Zarr
+
+# Zarr v3
+zarr>=3.0.0
 
 # Copernicus Marine data access
 copernicusmarine
 
 # Database
 sqlalchemy>=2.0
-psycopg2-binary  # PostgreSQL sync driver
-asyncpg  # PostgreSQL async driver
+psycopg2-binary       # PostgreSQL sync driver
+asyncpg               # PostgreSQL async driver
 
 # Orchestration (Prefect 3 + Dask)
 prefect>=3.0.0
 dask[complete]>=2024.1.0
 distributed
-
-# Azure Storage
-azure-storage-blob>=12.19.0
-azure-identity>=1.15.0
-adlfs>=2024.2.0  # fsspec Azure support for Zarr
-
-# Zarr v3
-zarr>=3.0.0
 
 # ECMWF Earthkit - enhanced data processing
 earthkit-data>=0.5.0
@@ -44,8 +50,3 @@ earthkit-meteo>=0.1.0
 pytest>=9.0.0
 pytest-asyncio>=1.0.0
 pytest-cov>=5.0.0
-
-# Main Testing
-xarray
-netCDF4
-pydap

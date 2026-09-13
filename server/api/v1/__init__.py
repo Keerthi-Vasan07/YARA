@@ -14,6 +14,7 @@ from .stac import router as stac_router
 from .zarr import router as zarr_router
 from .opendap_sst import router as opendap_sst_router
 from .local_dataset import router as local_dataset_router
+from .online import router as online_router
 
 # Main v1 router that combines all sub-routers
 router = APIRouter()
@@ -42,8 +43,11 @@ router.include_router(stac_router)
 # Zarr analytics endpoints (/api/zarr/*)
 router.include_router(zarr_router)
 
-# OPeNDAP SST endpoints
+# OPeNDAP SST endpoints (legacy — kept for backward compatibility)
 router.include_router(opendap_sst_router)
 
 # Local dataset endpoints (/api/local-dataset/*)
 router.include_router(local_dataset_router)
+
+# Generic Online / OPeNDAP endpoints (/api/online/*)
+router.include_router(online_router)
