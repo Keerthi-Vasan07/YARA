@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import logging
 import math
+import os
 import re
 from functools import lru_cache
 from typing import Any, Dict, Optional
@@ -288,6 +289,80 @@ def find_time_coordinate(ds: Any) -> tuple[Optional[str], Optional[Any]]:
                 return str(key), var_obj
 
     return None, None
+
+def inspect_dataset_metadata(variable: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    # IMPORTANT: ds comes from lru_cache — do NOT close it.
+    ds = _open_dataset_cached(cfg["dataset_id"], variable)
+    if ds is None:
+        raise ValueError(f"Unable to open dataset for '{variable}' ({cfg['dataset_id']}).")
+
+    data_vars = getattr(ds, "data_vars", None)
+    if data_vars is not None and variable not in data_vars:
+        raise ValueError(
+            f"Variable '{variable}' not returned by dataset. "
+            f"Available: {list(data_vars)}"
+        )
+    da = ds[variable]
+    da_attrs = getattr(da, "attrs", {}) or {}
+    result = {
+        "variable_key": variable,
+        "dataset_id": cfg["dataset_id"],
+        "display_name": cfg["display_name"],
+        "units": cfg["units_display"],
+        "source": cfg["source"],
+        "provider": cfg["provider"],
+        "description": cfg["description"],
+        "opendap_url": cfg["opendap_url"],
+        "variable_name": variable,
+        "variable_attrs": {str(k): str(v) for k, v in da_attrs.items()},
+        "dimensions": list(getattr(da, "dims", [])),
+        "shape": [int(x) for x in getattr(da, "shape", [])],
+        "is_3d": bool(cfg.get("is_3d", False)),
+        "vmin": cfg["vmin"],
+        "vmax": cfg["vmax"],
+        "log_scale": cfg.get("log_scale", False),
+        "colormap": cfg.get("colormap", "viridis"),
+        "spatial_resolution_deg": cfg["spatial_resolution_deg"],
+    }
+    for name in ("latitude", "lat"):
+        if has_coord(ds, name):
+            result["lat_dim"] = name
+            coord = get_coord(ds, name)
+            vals = np.asarray(getattr(coord, "values", []))
+            result["n_lat"] = int(vals.size)
+            if vals.size:
+                result["lat_range"] = [
+                    float(np.nanmin(vals)),
+                    float(np.nanmax(vals)),
+                ]
+            break
+    for name in ("longitude", "lon"):
+        if has_coord(ds, name):
+            result["lon_dim"] = name
+            coord = get_coord(ds, name)
+            vals = np.asarray(getattr(coord, "values", []))
+            result["n_lon"] = int(vals.size)
+            if vals.size:
+                result["lon_range"] = [
+                    float(np.nanmin(vals)),
+                    float(np.nanmax(vals)),
+                ]
+            break
+
+    time_name, time_coord = find_time_coordinate(ds)
+    if time_name and time_coord is not None:
+        result["time_dim"] = time_name
+        encoding = getattr(time_coord, "encoding", {}) or {}
+        attrs_dict = getattr(time_coord, "attrs", {}) or {}
+        attrs = {**encoding, **attrs_dict}
+        vals = np.asarray(getattr(time_coord, "values", []))
+        result["n_times"] = int(vals.size)
+        if vals.size:
+            start_str = _format_time_value(vals.flat[0], attrs)
+            end_str = _format_time_value(vals.flat[-1], attrs)
+            result["time_range"] = [start_str, end_str]
+
+    return result
 
 def get_available_times(variable: str, cfg: Dict[str, Any]) -> list[str]:
     dataset_id = cfg.get("dataset_id", "unknown")
