@@ -203,8 +203,8 @@ def find_time_coordinate(ds: Any) -> tuple[Optional[str], Optional[Any]]:
     variables = getattr(ds, "variables", None) or getattr(ds, "data_vars", None)
     dims = getattr(ds, "dims", None)
 
-    # 1. Direct candidate match (prefer "time", then "datetime", then "date")
-    for candidate in ("time", "datetime", "date"):
+    # 1. Direct candidate match (prefer "time", then "datetime", "date", "t", "time_counter")
+    for candidate in ("time", "datetime", "date", "t", "time_counter"):
         if coords is not None and candidate in coords:
             return candidate, coords[candidate]
         if variables is not None and candidate in variables:
@@ -226,7 +226,7 @@ def find_time_coordinate(ds: Any) -> tuple[Optional[str], Optional[Any]]:
         all_keys.extend(list(dims.keys()) if isinstance(dims, dict) else list(dims))
 
     for key in all_keys:
-        if str(key).lower() in ("time", "datetime", "date"):
+        if str(key).lower() in ("time", "datetime", "date", "t", "time_counter"):
             coord = get_coord(ds, str(key))
             if coord is not None:
                 return str(key), coord

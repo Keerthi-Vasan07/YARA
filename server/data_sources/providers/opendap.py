@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - exercised by deployment configuration
 COORDINATE_ALIASES = {
     "latitude": {"lat", "latitude", "nav_lat", "y"},
     "longitude": {"lon", "longitude", "nav_lon", "x"},
-    "time": {"time", "datetime", "date", "time_counter", "TIME"},
+    "time": {"time", "datetime", "date", "time_counter", "TIME", "t"},
 }
 
 

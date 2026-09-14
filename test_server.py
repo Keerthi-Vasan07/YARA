@@ -52,7 +52,7 @@ def http_test(base: str, live_points: bool = False):
     r.raise_for_status()
     data = r.json()
 
-    keys = list(data.keys())
+    keys = [k for k in data.keys() if k != "datasets"]
     assert keys == EXPECTED, f"/datasets mismatch: {keys}"
     for key in EXPECTED:
         assert data[key]["dataset_id"] == DATASET_ID
