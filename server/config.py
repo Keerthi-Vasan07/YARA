@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     
     # CORS origins for frontend
     cors_origins: list[str] = [
+        "https://keerthivasan.qzz.io",
+        "https://www.keerthivasan.qzz.io",
         "https://yara-1-2tcg.onrender.com",
         "https://yara-h7wa.onrender.com",
         "http://localhost:5173",

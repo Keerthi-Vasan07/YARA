@@ -76,10 +76,21 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+def is_origin_allowed(origin: str | None) -> bool:
+    if not origin:
+        return False
+    clean_origin = origin.strip().rstrip("/")
+    if clean_origin in settings.get_effective_cors_origins:
+        return True
+    if clean_origin.startswith("https://") and clean_origin.endswith(".qzz.io"):
+        return True
+    return False
+
 # Configure CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.get_effective_cors_origins,
+    allow_origin_regex=r"https://.*\.qzz\.io",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -104,8 +115,7 @@ app.add_middleware(
 async def custom_http_exception_handler(request: Request, exc: HTTPException):
     origin = request.headers.get("origin")
     headers = dict(exc.headers or {})
-    effective_origins = settings.get_effective_cors_origins
-    if origin and origin in effective_origins:
+    if is_origin_allowed(origin):
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
     return JSONResponse(
@@ -119,8 +129,7 @@ async def custom_global_exception_handler(request: Request, exc: Exception):
     logger.exception("[YARA API ERROR] Unhandled exception on %s: %s", request.url.path, exc)
     origin = request.headers.get("origin")
     headers = {}
-    effective_origins = settings.get_effective_cors_origins
-    if origin and origin in effective_origins:
+    if is_origin_allowed(origin):
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
     return JSONResponse(
