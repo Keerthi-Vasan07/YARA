@@ -1,54 +1,343 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# =========================================================
+# YARA — Git Ignore
+# React/Vite + Python/FastAPI + Scientific Ocean Data
+# =========================================================
 
-# Node / Vite
-node_modules/
-dist/
-.vite/
 
-# Env files (keep examples)
+# =========================================================
+# ENVIRONMENT / SECRETS
+# =========================================================
+
 .env
 .env.*
 !.env.example
 
-# TypeScript build info
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Local credentials / tokens
+credentials.json
+secrets.json
+service-account.json
+
+
+# =========================================================
+# NODE / FRONTEND
+# =========================================================
+
+node_modules/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+.npm/
+.yarn/
+.pnpm-store/
+
+# Vite
+.vite/
+
+# Build output
+dist/
+build/
+out/
+
+# Coverage
+coverage/
+.nyc_output/
+
+# TypeScript
 *.tsbuildinfo
 
-# Python
-.venv/
+
+# =========================================================
+# PYTHON / FASTAPI
+# =========================================================
+
 __pycache__/
 *.py[cod]
+*$py.class
+
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Testing
 .pytest_cache/
+.tox/
+.nox/
 
-# Server data (COGs, Zarr, samples)
-server/products/
-server/zarr/
-server/sample_data/
-server/tiles/
-server/cache/
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
 
-# STAC catalog output (keep catalog.py code, ignore generated JSON)
-server/stac/catalog.json
-server/stac/collections/
-server/stac/items/
-*.tif
-*.nc
-*.zarr/
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
 
-# SSH keys
-infra/keys/
+# Ruff
+.ruff_cache/
 
 # Jupyter
 .ipynb_checkpoints/
 
-# OS / Editor
-.DS_Store
-Thumbs.db
+
+# =========================================================
+# SCIENTIFIC / NETCDF / OCEAN DATA
+# =========================================================
+
+# NetCDF datasets
+*.nc
+*.nc4
+*.cdf
+*.grib
+*.grb
+*.grb2
+
+# Scientific data formats
+*.h5
+*.hdf5
+*.hdf
+*.zarr
+
+# Large scientific data directories
+data/
+datasets/
+downloads/
+download/
+local_dataset/
+local_datasets/
+ocean_data/
+ocean-data/
+scientific_data/
+scientific-data/
+
+# Temporary generated scientific files
+*.tmp
+*.temp
+*.cache
+
+
+# =========================================================
+# GENERATED IMAGES / VISUALIZATION OUTPUT
+# =========================================================
+
+# Generated PNG/JPG files from API testing
+test_*.png
+test_*.jpg
+test_*.jpeg
+
+# Generated visualization output
+output/
+outputs/
+generated/
+generated_data/
+rendered/
+renders/
+
+# Temporary images
+*.webp
+
+
+# =========================================================
+# LOGS
+# =========================================================
+
+*.log
+logs/
+
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Uvicorn / FastAPI logs
+uvicorn.log
+server.log
+
+
+# =========================================================
+# CACHE
+# =========================================================
+
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Application caches
+.cache_data/
+.cache_files/
+tmp/
+temp/
+
+
+# =========================================================
+# IDE / EDITOR
+# =========================================================
+
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
 .idea/
-.vscode/
+*.iml
+
+# Antigravity / agent temporary files
+.agent/
+.agents/
+.antigravity/
+.gemini/
+
+# Cursor
+.cursor/
+
+# Claude
+.claude/
+
+# Copilot
+.github/copilot/
+
+
+# =========================================================
+# OS FILES
+# =========================================================
+
+.DS_Store
+.DS_Store?
+._*
+
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+
+Desktop.ini
+
+$RECYCLE.BIN/
+
+
+# =========================================================
+# WINDOWS
+# =========================================================
+
+*.lnk
+
+# PowerShell history
+ConsoleHost_history.txt
+
+
+# =========================================================
+# DATABASES / LOCAL STORAGE
+# =========================================================
+
+*.db
+*.sqlite
+*.sqlite3
+
+*.db-journal
+*.sqlite-journal
+
+
+# =========================================================
+# LOCAL BACKUPS
+# =========================================================
+
+*_backup/
+*_backup
+backup/
+backups/
+
+*.bak
+*.backup
+*.old
+
+
+# =========================================================
+# ARCHIVES
+# =========================================================
+
+# Ignore large/local archives
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.zip
+
+# Exception: if you intentionally want a specific project archive,
+# remove the corresponding rule above.
+
+
+# =========================================================
+# LOCAL CONFIGURATION
+# =========================================================
+
+*.local
+*.local.*
+config.local.*
+settings.local.*
+
+
+# =========================================================
+# TEMPORARY FILES
+# =========================================================
+
+*.swp
+*.swo
+*.swn
+
+*.tmp
+*.temp
+
+*~
+.#*
+.DS_Store
+
+
+# =========================================================
+# YARA-SPECIFIC GENERATED FILES
+# =========================================================
+
+# Runtime generated files
+runtime/
+runtime_data/
+
+# API generated files
+api_output/
+api_outputs/
+
+# Uploaded user datasets
+uploads/
+uploaded_files/
+
+# Generated thumbnails / previews
+previews/
+thumbnails/
+
+
+# =========================================================
+# KEEP EMPTY DIRECTORIES OUT OF GIT
+# =========================================================
+
+**/.gitkeep
