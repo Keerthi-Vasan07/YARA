@@ -342,3 +342,43 @@ thumbnails/
 
 **/.gitkeep
 *.patch
+
+# Dependencies
+node_modules/
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build
+dist/
+build/
+.cache/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Temporary/generated files
+*.png
+*.zip
+*.patch
+
+# Backup directories
+*_backup/
+*_backup_before_*/
+server_backup_before_argo/
+src_backup_before_argo/
+argo_glider_backup_before_argo/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
