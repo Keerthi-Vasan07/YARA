@@ -106,13 +106,25 @@ class OPeNDAPProvider(DatasetProvider):
     def _coordinate_names(ds) -> dict[str, str]:
         if ds is None:
             raise ProviderError("Dataset object is None.")
-        candidates = list(ds.coords) + [name for name in ds.dims if name not in ds.coords]
+        coords = getattr(ds, "coords", None)
+        dims = getattr(ds, "dims", None)
+        variables = getattr(ds, "variables", None) or getattr(ds, "data_vars", None)
+
+        candidates = []
+        if coords is not None:
+            candidates.extend(list(coords.keys()))
+        if dims is not None:
+            dim_list = list(dims.keys()) if isinstance(dims, dict) else list(dims)
+            for d in dim_list:
+                if d not in candidates:
+                    candidates.append(d)
+
         result: dict[str, str] = {}
         for role, aliases in COORDINATE_ALIASES.items():
             for name in candidates:
-                variable = ds.coords.get(name)
-                if variable is None and hasattr(ds, "variables") and name in ds.variables:
-                    variable = ds.variables.get(name)
+                variable = coords.get(name) if coords is not None else None
+                if variable is None and variables is not None and name in variables:
+                    variable = variables.get(name)
                 attrs = getattr(variable, "attrs", {}) if variable is not None else {}
                 if attrs is None:
                     attrs = {}
