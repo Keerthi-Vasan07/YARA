@@ -24,7 +24,27 @@ class Settings(BaseSettings):
     ice_threshold: float = 0.15
     
     # CORS origins for frontend
-    cors_origins: list[str] = ["http://localhost:5847", "http://127.0.0.1:5847","https://yara-1-2tcg.onrender.com",]
+    cors_origins: list[str] = [
+        "http://localhost:5847",
+        "http://127.0.0.1:5847",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "https://yara-1-2tcg.onrender.com",
+        "https://yara-h7wa.onrender.com",
+    ]
+
+    @property
+    def get_effective_cors_origins(self) -> list[str]:
+        origins = list(self.cors_origins)
+        env_origins = os.environ.get("CORS_ORIGINS") or os.environ.get("ECV_CORS_ORIGINS")
+        if env_origins:
+            for item in env_origins.split(","):
+                item = item.strip()
+                if item and item not in origins:
+                    origins.append(item)
+        return origins
+
     
     # ==========================================================================
     # Data Storage Configuration

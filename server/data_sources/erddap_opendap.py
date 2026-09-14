@@ -93,6 +93,75 @@ def open_remote_dataset(
     logger.info("[COPERNICUS] subset request=%s", kwargs)
     return copernicusmarine.open_dataset(**kwargs)
 
+def _format_time_value(val: Any, attrs: dict[str, Any] | None = None) -> str:
+    if val is None:
+        return ""
+    
+    if isinstance(val, np.datetime64):
+        try:
+            return str(np.datetime_as_string(val, unit="s")).replace("Z", "")
+        except Exception:
+            pass
+
+    if hasattr(val, "isoformat") and callable(getattr(val, "isoformat")):
+        try:
+            iso = str(val.isoformat())
+            if "T" in iso:
+                return iso[:19]
+            return iso
+        except Exception:
+            pass
+
+    if hasattr(val, "strftime") and callable(getattr(val, "strftime")) and not isinstance(val, np.datetime64):
+        try:
+            return str(val.strftime("%Y-%m-%dT%H:%M:%S"))
+        except Exception:
+            pass
+
+    val_item = np.asarray(val).item() if np.asarray(val).ndim == 0 else val
+
+    if isinstance(val_item, np.datetime64):
+        try:
+            return str(np.datetime_as_string(val_item, unit="s")).replace("Z", "")
+        except Exception:
+            pass
+
+    if isinstance(val_item, (int, np.integer)) and val_item > 1e11:
+        try:
+            dt = np.datetime64(int(val_item), "ns")
+            return str(np.datetime_as_string(dt, unit="s")).replace("Z", "")
+        except Exception:
+            pass
+
+    if isinstance(val_item, (int, float, np.integer, np.floating)) and not isinstance(val_item, bool):
+        if np.isnan(val_item):
+            return ""
+        units = (attrs or {}).get("units")
+        if units and "since" in str(units):
+            try:
+                import cftime
+                calendar = (attrs or {}).get("calendar", "standard")
+                dt = cftime.num2date(val_item, units=str(units), calendar=calendar)
+                if hasattr(dt, "strftime"):
+                    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+            except Exception:
+                try:
+                    if xr is not None:
+                        dt = xr.coding.times.decode_cf_datetime(
+                            np.asarray([val_item]), units=str(units), calendar=(attrs or {}).get("calendar", "standard")
+                        )[0]
+                        if hasattr(dt, "strftime"):
+                            return dt.strftime("%Y-%m-%dT%H:%M:%S")
+                except Exception:
+                    pass
+
+    text = str(val).strip()
+    if " " in text and "T" not in text:
+        text = text.replace(" ", "T")
+    if text.endswith("Z"):
+        text = text[:-1]
+    return text[:19] if len(text) >= 19 and "T" in text else text
+
 def inspect_dataset_metadata(variable: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     # IMPORTANT: ds comes from lru_cache — do NOT close it.
     ds = _open_dataset_cached(cfg["dataset_id"], variable)
@@ -102,6 +171,7 @@ def inspect_dataset_metadata(variable: str, cfg: Dict[str, Any]) -> Dict[str, An
             f"Available: {list(ds.data_vars)}"
         )
     da = ds[variable]
+    da_attrs = getattr(da, "attrs", {}) or {}
     result = {
         "variable_key": variable,
         "dataset_id": cfg["dataset_id"],
@@ -112,7 +182,7 @@ def inspect_dataset_metadata(variable: str, cfg: Dict[str, Any]) -> Dict[str, An
         "description": cfg["description"],
         "opendap_url": cfg["opendap_url"],
         "variable_name": variable,
-        "variable_attrs": {str(k): str(v) for k, v in da.attrs.items()},
+        "variable_attrs": {str(k): str(v) for k, v in da_attrs.items()},
         "dimensions": list(da.dims),
         "shape": [int(x) for x in da.shape],
         "is_3d": bool(cfg.get("is_3d", False)),
@@ -123,61 +193,77 @@ def inspect_dataset_metadata(variable: str, cfg: Dict[str, Any]) -> Dict[str, An
         "spatial_resolution_deg": cfg["spatial_resolution_deg"],
     }
     for name in ("latitude", "lat"):
-        if name in ds.coords:
+        if name in ds.coords or name in ds.dims:
             result["lat_dim"] = name
-            result["n_lat"] = int(ds[name].size)
+            coord = ds.coords[name] if name in ds.coords else ds[name]
+            result["n_lat"] = int(coord.size)
             result["lat_range"] = [
-                float(np.nanmin(ds[name].values)),
-                float(np.nanmax(ds[name].values)),
+                float(np.nanmin(coord.values)),
+                float(np.nanmax(coord.values)),
             ]
             break
     for name in ("longitude", "lon"):
-        if name in ds.coords:
+        if name in ds.coords or name in ds.dims:
             result["lon_dim"] = name
-            result["n_lon"] = int(ds[name].size)
+            coord = ds.coords[name] if name in ds.coords else ds[name]
+            result["n_lon"] = int(coord.size)
             result["lon_range"] = [
-                float(np.nanmin(ds[name].values)),
-                float(np.nanmax(ds[name].values)),
+                float(np.nanmin(coord.values)),
+                float(np.nanmax(coord.values)),
             ]
             break
     for name in ("time", "datetime", "date"):
-        if name in ds.coords:
+        if name in ds.coords or name in ds.dims or name in ds.variables:
             result["time_dim"] = name
-            vals = np.asarray(ds[name].values)
+            coord = ds.coords[name] if name in ds.coords else ds[name]
+            encoding = getattr(coord, "encoding", {}) or {}
+            attrs_dict = getattr(coord, "attrs", {}) or {}
+            attrs = {**encoding, **attrs_dict}
+            vals = np.asarray(coord.values)
             result["n_times"] = int(vals.size)
             if vals.size:
-                result["time_range"] = [str(vals.flat[0]), str(vals.flat[-1])]
+                start_str = _format_time_value(vals.flat[0], attrs)
+                end_str = _format_time_value(vals.flat[-1], attrs)
+                result["time_range"] = [start_str, end_str]
             break
     return result
 
 def get_available_times(variable: str, cfg: Dict[str, Any]) -> list[str]:
-    # IMPORTANT: _open_dataset_cached uses lru_cache — do NOT close the returned
-    # dataset object, or the cache entry becomes a closed/invalid handle.
     ds = _open_dataset_cached(cfg["dataset_id"], variable)
     name = next((n for n in ("time", "datetime", "date") if n in ds.coords), None)
     if not name:
+        name = next((n for n in ("time", "datetime", "date") if n in ds.dims or n in ds.variables), None)
+    if not name:
         return []
-    values = np.asarray(ds[name].values)
+    coord = ds.coords[name] if name in ds.coords else ds[name]
+    if coord is None:
+        return []
+    encoding = getattr(coord, "encoding", {}) or {}
+    attrs_dict = getattr(coord, "attrs", {}) or {}
+    attrs = {**encoding, **attrs_dict}
+    values = np.asarray(coord.values)
     out = []
     for v in values.flat:
-        try:
-            out.append(np.datetime_as_string(np.datetime64(v), unit="s"))
-        except Exception:
-            out.append(str(v))
+        formatted = _format_time_value(v, attrs)
+        if formatted:
+            out.append(formatted)
     return out
 
 @lru_cache(maxsize=64)
 def _get_latest_time_cached(dataset_id: str, variable: str) -> Optional[str]:
-    """Cache the latest timestamp per (dataset, variable) to avoid re-opening
-    the full global dataset on every render_to_png call."""
     ds = _open_dataset_cached(dataset_id, variable)
     name = next((n for n in ("time", "datetime", "date") if n in ds.coords), None)
+    if not name:
+        name = next((n for n in ("time", "datetime", "date") if n in ds.dims or n in ds.variables), None)
     if not name or ds[name].size == 0:
         return None
-    try:
-        return np.datetime_as_string(np.datetime64(ds[name].values[-1]), unit="s")
-    except Exception:
-        return str(ds[name].values[-1])
+    coord = ds.coords[name] if name in ds.coords else ds[name]
+    if coord is None:
+        return None
+    encoding = getattr(coord, "encoding", {}) or {}
+    attrs_dict = getattr(coord, "attrs", {}) or {}
+    attrs = {**encoding, **attrs_dict}
+    return _format_time_value(coord.values[-1], attrs)
 
 def get_latest_time(variable: str, cfg: Dict[str, Any]) -> Optional[str]:
     return _get_latest_time_cached(cfg["dataset_id"], variable)
@@ -195,17 +281,39 @@ def _coord_name(ds, candidates):
 
 def _time_select(ds, requested: str | None):
     name = _coord_name(ds, ("time", "datetime", "date"))
-    if not name or ds[name].size == 0:
+    if not name or name not in ds or ds[name].size == 0:
         return ds, None
+    coord = ds[name]
+    encoding = getattr(coord, "encoding", {}) or {}
+    attrs_dict = getattr(coord, "attrs", {}) or {}
+    attrs = {**encoding, **attrs_dict}
+
     if requested in (None, "", "latest"):
-        actual = ds[name].values[-1]
-    else:
-        try:
-            target = np.datetime64(requested)
-            actual = ds[name].sel({name: target}, method="nearest").values
-        except Exception:
-            actual = ds[name].values[-1]
-    return ds.sel({name: actual}), str(actual)
+        latest_str = _format_time_value(coord.values[-1], attrs)
+        return ds.isel({name: -1}), latest_str
+
+    times_list = [_format_time_value(v, attrs) for v in np.asarray(coord.values).flat]
+    target = requested[:19].replace("Z", "")
+
+    # Exact match first
+    for idx, t in enumerate(times_list):
+        if t == target or t.startswith(target) or target.startswith(t):
+            return ds.isel({name: idx}), t
+
+    # Date-only match
+    date_target = target[:10]
+    for idx, t in enumerate(times_list):
+        if t.startswith(date_target):
+            return ds.isel({name: idx}), t
+
+    # Nearest match via xarray sel
+    try:
+        dt = np.datetime64(requested)
+        matched_ds = ds.sel({name: dt}, method="nearest")
+        matched_val = matched_ds[name].values
+        return matched_ds, _format_time_value(matched_val, attrs)
+    except Exception:
+        return ds.isel({name: -1}), times_list[-1] if times_list else requested
 
 def _slice_for_coord(coord, low, high):
     values = np.asarray(coord.values)

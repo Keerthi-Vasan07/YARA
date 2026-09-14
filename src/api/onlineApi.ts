@@ -1,5 +1,7 @@
 /** Backend-owned online dataset contract. No provider endpoint is exposed here. */
-const API_BASE = `${import.meta.env.VITE_API_BASE_URL || ''}/api/online`;
+const rawBase = import.meta.env.VITE_API_BASE_URL || '';
+const cleanBase = rawBase.endsWith('/') ? rawBase.slice(0, -1) : rawBase;
+const API_BASE = `${cleanBase}/api/online`;
 
 export interface OnlineVariable { id: string; source_name: string; name: string; units: string; type: 'scalar' | 'vector_component'; category: string; vector_group?: string | null; paired_component?: string | null; colormap?: string; vmin?: number | null; vmax?: number | null; log_scale?: boolean; }
 export interface OnlineDataset { id: string; name: string; provider: string; source: string; description: string; variables: OnlineVariable[]; temporal_resolution: string; spatial_resolution: string; coverage: Record<string, number>; capabilities: Record<string, boolean>; }
@@ -40,7 +42,9 @@ async function json<T>(url: string, signal?: AbortSignal): Promise<T> {
   return response.json() as Promise<T>;
 }
 export const fetchOnlineDatasets = async () => {
+  console.log('[YARA ONLINE] dataset request:', `${API_BASE}/datasets`);
   const data = await json<any>(`${API_BASE}/datasets`);
+  console.log('[YARA ONLINE] dataset response:', data);
   if (data && Array.isArray(data.datasets)) {
     return { datasets: data.datasets as OnlineDataset[] };
   }
@@ -49,15 +53,28 @@ export const fetchOnlineDatasets = async () => {
   }
   return { datasets: [] };
 };
-export const fetchOnlineMetadata = (id: string) => json<OnlineMetadata>(`${API_BASE}/datasets/${encodeURIComponent(id)}/metadata`);
-export const fetchOnlineTimes = (id: string) => json<OnlineTimes>(`${API_BASE}/datasets/${encodeURIComponent(id)}/times`);
+export const fetchOnlineMetadata = async (id: string) => {
+  const url = `${API_BASE}/datasets/${encodeURIComponent(id)}/metadata`;
+  console.log('[YARA ONLINE] metadata request:', url);
+  const res = await json<OnlineMetadata>(url);
+  console.log('[YARA ONLINE] metadata response:', res);
+  return res;
+};
+export const fetchOnlineTimes = async (id: string) => {
+  const url = `${API_BASE}/datasets/${encodeURIComponent(id)}/times`;
+  console.log('[YARA ONLINE] times request:', url);
+  const res = await json<OnlineTimes>(url);
+  console.log('[YARA ONLINE] times response:', res);
+  return res;
+};
 
 export interface OnlineFrameResponse { blobUrl: string; status: number; blobSize: number; blobType: string; matchedTime: string; matchedDate: string; datasetId: string; variable: string; bounds: { west: number; south: number; east: number; north: number }; width?: number; height?: number; }
 export async function fetchOnlineFrame(datasetId: string, variable: string, time: string, options: { colormap?: string; vmin?: number; vmax?: number; maxPixels?: number } = {}, signal?: AbortSignal): Promise<OnlineFrameResponse> {
   const params = new URLSearchParams({ dataset_id: datasetId, variable, time, date: time, lat_min: '-80', lat_max: '90', lon_min: '-180', lon_max: '180', max_pixels: String(options.maxPixels ?? 1536), colormap: options.colormap ?? 'viridis' });
   if (Number.isFinite(options.vmin)) params.set('vmin', String(options.vmin));
   if (Number.isFinite(options.vmax)) params.set('vmax', String(options.vmax));
-  console.log(`[ONLINE] requesting frame: variable=${variable} time=${time} colormap=${options.colormap}`);
+  const fullUrl = `${API_BASE}/data?${params}`;
+  console.log('[YARA ONLINE] frame request:', fullUrl);
 
   const controller = new AbortController();
   let timedOut = false;
@@ -81,15 +98,15 @@ export async function fetchOnlineFrame(datasetId: string, variable: string, time
   }
 
   try {
-    const response = await fetch(`${API_BASE}/data?${params}`, { signal: controller.signal });
-    console.log(`[ONLINE] response status: ${response.status}`);
+    const response = await fetch(fullUrl, { signal: controller.signal });
+    console.log('[YARA ONLINE] frame response status:', response.status);
     if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `Frame request failed (${response.status})`); }
     const numberHeader = (name: string, fallback: number) => Number(response.headers.get(name) ?? fallback);
     const blob = await response.blob();
-    console.log(`[ONLINE] PNG size: ${blob.size} bytes`);
+    console.log(`[YARA ONLINE] frame response blob size: ${blob.size} bytes`);
     const matchedTime = response.headers.get('X-Date-Matched') || response.headers.get('X-Time-Matched') || time;
     const bounds = { west: numberHeader('X-Bounds-West', -180), south: numberHeader('X-Bounds-South', -80), east: numberHeader('X-Bounds-East', 180), north: numberHeader('X-Bounds-North', 90) };
-    console.log(`[ONLINE] bounds: west=${bounds.west} south=${bounds.south} east=${bounds.east} north=${bounds.north}`);
+    console.log(`[YARA ONLINE] bounds: west=${bounds.west} south=${bounds.south} east=${bounds.east} north=${bounds.north}`);
     return {
       blobUrl: URL.createObjectURL(blob), status: response.status, blobSize: blob.size, blobType: blob.type, matchedTime, matchedDate: matchedTime,
       datasetId: response.headers.get('X-Dataset-Id') || datasetId, variable: response.headers.get('X-Variable') || variable,
@@ -108,6 +125,12 @@ export async function fetchOnlineFrame(datasetId: string, variable: string, time
     }
   }
 }
-export function fetchOnlinePoint(datasetId: string, variable: string, time: string, lon: number, lat: number, signal?: AbortSignal) {
-  return json<OnlinePointQuery>(`${API_BASE}/point?${new URLSearchParams({ dataset_id: datasetId, variable, time, date: time, lon: String(lon), lat: String(lat) })}`, signal);
+export async function fetchOnlinePoint(datasetId: string, variable: string, time: string, lon: number, lat: number, signal?: AbortSignal) {
+  const url = `${API_BASE}/point?${new URLSearchParams({ dataset_id: datasetId, variable, time, date: time, lon: String(lon), lat: String(lat) })}`;
+  console.log('[YARA ONLINE] point request:', { datasetId, variable, time, lon, lat, url });
+  const res = await json<OnlinePointQuery>(url, signal);
+  const val = res.value !== undefined && res.value !== null ? res.value : (Array.isArray(res.values) && res.values.length > 0 ? res.values[0] : null);
+  console.log('[YARA ONLINE] point response:', { datasetId, variable, time, lon, lat, returned_value: val, units: res.units });
+  return res;
 }
+

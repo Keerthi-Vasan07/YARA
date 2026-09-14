@@ -29,8 +29,12 @@ COORDINATE_ALIASES = {
 
 def _timestamp(value: Any, attrs: dict[str, Any] | None = None) -> str:
     """Return a UI-safe UTC timestamp without silently changing its instant."""
+    if value is None:
+        return ""
     value = np.asarray(value).item() if np.asarray(value).ndim == 0 else value
     if isinstance(value, (int, float, np.integer, np.floating)):
+        if np.isnan(value):
+            return ""
         units = (attrs or {}).get("units")
         if not units or "since" not in str(units):
             raise ProviderError("The dataset time coordinate has numeric values without CF time units.")
@@ -39,17 +43,39 @@ def _timestamp(value: Any, attrs: dict[str, Any] | None = None) -> str:
         value = xr.coding.times.decode_cf_datetime(
             np.asarray([value]), units=str(units), calendar=(attrs or {}).get("calendar", "standard")
         )[0]
-    if hasattr(value, "strftime") and not isinstance(value, np.datetime64):
-        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
-    text = np.datetime_as_string(np.datetime64(value), unit="s")
-    return text.replace("Z", "") + "Z"
+    if hasattr(value, "isoformat") and callable(getattr(value, "isoformat")):
+        try:
+            iso = value.isoformat()
+            if "T" in iso:
+                return iso[:19] + "Z"
+            return iso + "Z"
+        except Exception:
+            pass
+    if hasattr(value, "strftime") and callable(getattr(value, "strftime")) and not isinstance(value, np.datetime64):
+        try:
+            return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            pass
+    try:
+        text = np.datetime_as_string(np.datetime64(value), unit="s")
+        return text.replace("Z", "") + "Z"
+    except Exception:
+        text = str(value).strip().replace(" ", "T")
+        if text.endswith("Z"):
+            text = text[:-1]
+        return (text[:19] if len(text) >= 19 and "T" in text else text) + "Z"
 
 
 def _timestamps(coordinate) -> list[str]:
-    # xarray moves CF units to ``encoding`` after successful decode; some
-    # pydap servers defer decoding until values are accessed. Support both.
-    attrs = {**coordinate.encoding, **coordinate.attrs}
-    return [_timestamp(value, attrs) for value in coordinate.values]
+    if coordinate is None:
+        return []
+    encoding = getattr(coordinate, "encoding", {}) or {}
+    attrs_dict = getattr(coordinate, "attrs", {}) or {}
+    attrs = {**encoding, **attrs_dict}
+    values = getattr(coordinate, "values", None)
+    if values is None:
+        return []
+    return [_timestamp(value, attrs) for value in values]
 
 
 def _resolution(timestamps: list[str]) -> str:
@@ -78,12 +104,18 @@ class OPeNDAPProvider(DatasetProvider):
 
     @staticmethod
     def _coordinate_names(ds) -> dict[str, str]:
+        if ds is None:
+            raise ProviderError("Dataset object is None.")
         candidates = list(ds.coords) + [name for name in ds.dims if name not in ds.coords]
         result: dict[str, str] = {}
         for role, aliases in COORDINATE_ALIASES.items():
             for name in candidates:
                 variable = ds.coords.get(name)
-                attrs = variable.attrs if variable is not None else {}
+                if variable is None and hasattr(ds, "variables") and name in ds.variables:
+                    variable = ds.variables.get(name)
+                attrs = getattr(variable, "attrs", {}) if variable is not None else {}
+                if attrs is None:
+                    attrs = {}
                 axis = str(attrs.get("axis", "")).upper()
                 standard_name = str(attrs.get("standard_name", "")).lower()
                 if (name.lower() in {alias.lower() for alias in aliases}

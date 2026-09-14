@@ -47,8 +47,8 @@ export function OnlineControls({ state, onChange, onApply, frameLoading = false 
     <Typography variant="overline" sx={{ color: '#6EF2FC' }}>Online ocean data</Typography>
     <Stack spacing={1}>
       <Typography variant="caption">Dataset</Typography><OnlineDatasetSelector datasets={state.registry} value={draftDataset} onChange={setDraftDataset} disabled={busy} />
-      <Typography variant="caption">Variable</Typography><OnlineVariableSelector variables={scalarVariables} value={draftVariable} onChange={setDraftVariable} disabled={busy || !scalarVariables.length} />
-      <Typography variant="caption">Date and time (UTC)</Typography><OnlineTimeSelector timestamps={times?.timestamps || []} value={draftTime} onChange={setDraftTime} disabled={busy} />
+      <Typography variant="caption">Variable</Typography><OnlineVariableSelector variables={scalarVariables} value={draftVariable} onChange={(v) => { setDraftVariable(v); onChange({ variable: v }); }} disabled={busy || !scalarVariables.length} />
+      <Typography variant="caption">Date and time (UTC)</Typography><OnlineTimeSelector timestamps={times?.timestamps || []} value={draftTime} onChange={(t) => { setDraftTime(t); onChange({ date: t, resolvedDate: t }); }} disabled={busy} />
       <OnlineDatasetInfo dataset={selected} times={times} />
       {state.error && <Alert severity="error">{state.error}</Alert>}
       <Button variant="contained" disabled={busy || !draftDataset || !draftVariable || !draftTime} onClick={() => onApply(draftDataset, draftVariable, draftTime)}>{busy ? <CircularProgress size={18} /> : 'Load data'}</Button>
