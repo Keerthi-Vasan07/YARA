@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     ice_threshold: float = 0.15
     
     # CORS origins for frontend
-    cors_origins: list[str] = ["http://localhost:5847", "http://127.0.0.1:5847"]
+    cors_origins: list[str] = ["http://localhost:5847", "http://127.0.0.1:5847","https://yara-1-2tcg.onrender.com",]
     
     # ==========================================================================
     # Data Storage Configuration
