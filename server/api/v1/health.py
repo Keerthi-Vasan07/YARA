@@ -2,7 +2,7 @@
 Health and status endpoints.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from server.data_service import sst_service
 
@@ -22,6 +22,23 @@ async def health():
     Returns 200 if the service is healthy.
     """
     return {"status": "healthy"}
+
+
+@router.get("/health/cors")
+async def health_cors(request: Request):
+    """
+    Diagnostic endpoint to verify client origin and active CORS configuration.
+    """
+    from server.config import settings
+    origin = request.headers.get("origin")
+    effective_origins = settings.get_effective_cors_origins
+    is_allowed = (origin in effective_origins) if origin else None
+    return {
+        "status": "ok",
+        "client_origin": origin,
+        "is_allowed": is_allowed,
+        "effective_cors_origins": effective_origins,
+    }
 
 
 @router.get("/ready")

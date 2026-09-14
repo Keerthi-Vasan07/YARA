@@ -1,7 +1,7 @@
+import { API_BASE_URL } from './config';
+
 /** Backend-owned online dataset contract. No provider endpoint is exposed here. */
-const rawBase = import.meta.env.VITE_API_BASE_URL || '';
-const cleanBase = rawBase.endsWith('/') ? rawBase.slice(0, -1) : rawBase;
-const API_BASE = `${cleanBase}/api/online`;
+const API_BASE = `${API_BASE_URL}/api/online`;
 
 export interface OnlineVariable { id: string; source_name: string; name: string; units: string; type: 'scalar' | 'vector_component'; category: string; vector_group?: string | null; paired_component?: string | null; colormap?: string; vmin?: number | null; vmax?: number | null; log_scale?: boolean; }
 export interface OnlineDataset { id: string; name: string; provider: string; source: string; description: string; variables: OnlineVariable[]; temporal_resolution: string; spatial_resolution: string; coverage: Record<string, number>; capabilities: Record<string, boolean>; }

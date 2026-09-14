@@ -82,6 +82,21 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "X-Date-Matched",
+        "X-Time-Matched",
+        "X-Variable",
+        "X-Dataset-Id",
+        "X-Bounds-West",
+        "X-Bounds-South",
+        "X-Bounds-East",
+        "X-Bounds-North",
+        "X-Raster-Width",
+        "X-Raster-Height",
+        "Content-Type",
+        "Content-Length",
+        "Access-Control-Allow-Origin",
+    ],
 )
 
 # Include all API v1 routes

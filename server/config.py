@@ -25,13 +25,16 @@ class Settings(BaseSettings):
     
     # CORS origins for frontend
     cors_origins: list[str] = [
-        "http://localhost:5847",
-        "http://127.0.0.1:5847",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8000",
         "https://yara-1-2tcg.onrender.com",
         "https://yara-h7wa.onrender.com",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5847",
+        "http://127.0.0.1:5847",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
     ]
 
     @property
@@ -39,11 +42,29 @@ class Settings(BaseSettings):
         origins = list(self.cors_origins)
         env_origins = os.environ.get("CORS_ORIGINS") or os.environ.get("ECV_CORS_ORIGINS")
         if env_origins:
-            for item in env_origins.split(","):
-                item = item.strip()
-                if item and item not in origins:
-                    origins.append(item)
-        return origins
+            raw = env_origins.strip()
+            if raw.startswith("[") and raw.endswith("]"):
+                try:
+                    import json
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        for item in parsed:
+                            item_str = str(item).strip().strip('"').strip("'").rstrip("/")
+                            if item_str and item_str not in origins:
+                                origins.append(item_str)
+                except Exception:
+                    pass
+            else:
+                for item in raw.split(","):
+                    item_str = item.strip().strip('"').strip("'").rstrip("/")
+                    if item_str and item_str not in origins:
+                        origins.append(item_str)
+        cleaned = []
+        for o in origins:
+            clean = str(o).strip().rstrip("/")
+            if clean and clean not in cleaned:
+                cleaned.append(clean)
+        return cleaned
 
     
     # ==========================================================================

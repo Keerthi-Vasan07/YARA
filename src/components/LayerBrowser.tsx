@@ -1,3 +1,4 @@
+import { buildApiUrl } from '../api/config';
 import { useState, useEffect, useRef } from 'react';
 import {
   Box,
@@ -494,7 +495,7 @@ export function LayerBrowser({
     console.log('Download params:', downloadParams);
     
     // For now, just download the current tile
-    const url = `/api/tiles/${variableCode}/${selectedDate}/0/0/0.png`;
+    const url = buildApiUrl(`/api/tiles/${variableCode}/${selectedDate}/0/0/0.png`);
     const link = document.createElement('a');
     link.href = url;
     link.download = `${variableCode}-${dateFrom}${dateTo !== dateFrom ? `-to-${dateTo}` : ''}.${format === 'netcdf' ? 'nc' : format}`;

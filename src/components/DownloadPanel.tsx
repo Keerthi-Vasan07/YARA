@@ -1,3 +1,4 @@
+import { buildApiUrl } from '../api/config';
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   Box,
@@ -146,7 +147,7 @@ export function DownloadPanel({
         format: format,
       });
       
-      const response = await fetch(`/api/${variable}/subset?${params}`);
+      const response = await fetch(buildApiUrl(`/api/${variable}/subset?${params}`));
       
       if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Download failed' }));

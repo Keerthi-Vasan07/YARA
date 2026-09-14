@@ -40,7 +40,9 @@ export interface ArgoStats {
   [key: string]: unknown;
 }
 
-const API_BASE = '/api/argo-glider';
+import { API_BASE_URL } from './config';
+
+const API_BASE = `${API_BASE_URL}/api/argo-glider`;
 
 async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { signal });

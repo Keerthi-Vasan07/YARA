@@ -3,10 +3,9 @@
  */
 
 import { DatasetInfo, ActiveModeResponse, LocalPointQueryResponse, AnalysisOptions, FrameStyle, FrameStats, DatasetGrid } from '../types/dataset';
+import { API_BASE_URL } from '../api/config';
 
-const rawBase = import.meta.env.VITE_API_BASE_URL || '';
-const cleanBase = rawBase.endsWith('/') ? rawBase.slice(0, -1) : rawBase;
-const BASE_URL = `${cleanBase}/api/local-dataset`;
+const BASE_URL = `${API_BASE_URL}/api/local-dataset`;
 export async function fetchActiveMode(): Promise<ActiveModeResponse> {
   const res = await fetch(`${BASE_URL}/active`);
   if (!res.ok) throw new Error('Failed to fetch active dataset mode');

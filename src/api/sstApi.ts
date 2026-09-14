@@ -1,8 +1,10 @@
+import { API_BASE_URL } from './config';
+
 /**
  * API client for SST data backend.
  */
 
-const API_BASE = '/api';
+const API_BASE = `${API_BASE_URL}/api`;
 
 export interface TimeRange {
   total_months: number;

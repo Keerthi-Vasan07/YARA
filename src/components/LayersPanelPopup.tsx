@@ -1,3 +1,4 @@
+import { buildApiUrl } from '../api/config';
 import { useEffect, useRef, useState } from 'react';
 import {
   Box,
@@ -236,7 +237,7 @@ export function LayersPanelPopup({
 
   const handleDownload = () => {
     const layerId = expandedLayer || 'sst';
-    const url = `/api/download/${layerId}?date=${dateFrom}&format=${format}&north=${bbox.north}&south=${bbox.south}&east=${bbox.east}&west=${bbox.west}`;
+    const url = buildApiUrl(`/api/download/${layerId}?date=${dateFrom}&format=${format}&north=${bbox.north}&south=${bbox.south}&east=${bbox.east}&west=${bbox.west}`);
     const link = document.createElement('a');
     link.href = url;
     link.download = `${layerId}-${dateFrom}.${format === 'netcdf' ? 'nc' : format}`;
