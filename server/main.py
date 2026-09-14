@@ -9,8 +9,9 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .config import settings
 from .data_service import sst_service
@@ -98,6 +99,35 @@ app.add_middleware(
         "Access-Control-Allow-Origin",
     ],
 )
+
+@app.exception_handler(HTTPException)
+async def custom_http_exception_handler(request: Request, exc: HTTPException):
+    origin = request.headers.get("origin")
+    headers = dict(exc.headers or {})
+    effective_origins = settings.get_effective_cors_origins
+    if origin and origin in effective_origins:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=headers,
+    )
+
+@app.exception_handler(Exception)
+async def custom_global_exception_handler(request: Request, exc: Exception):
+    logger.exception("[YARA API ERROR] Unhandled exception on %s: %s", request.url.path, exc)
+    origin = request.headers.get("origin")
+    headers = {}
+    effective_origins = settings.get_effective_cors_origins
+    if origin and origin in effective_origins:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"},
+        headers=headers,
+    )
 
 # Include all API v1 routes
 app.include_router(v1_router)

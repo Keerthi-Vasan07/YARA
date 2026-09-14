@@ -331,6 +331,7 @@ async def frame(
             media_type="image/png",
             headers={
                 "Cache-Control": "public, max-age=300",
+                "Vary": "Origin",
                 "X-Date-Matched": str(matched),
                 "X-Variable": variable,
                 "X-Dataset-Id": cfg["dataset_id"],

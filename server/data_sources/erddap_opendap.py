@@ -678,11 +678,15 @@ def _resolve_color_stops(cmap_name: str | None, cfg: Dict[str, Any]):
     if named is not None:
         return [(position, _parse_hex_color(color)) for position, color in named]
 
-    # Preserve support for any standard matplotlib palette.
-    cmap = colormaps.get_cmap(requested)
-    sample = np.linspace(0.0, 1.0, 256)
-    rgba = cmap(sample)
-    return [(float(p), tuple((row[:3] * 255).astype(np.uint8))) for p, row in zip(sample, rgba)]
+    # Preserve support for any standard matplotlib palette with graceful fallback
+    try:
+        cmap = colormaps.get_cmap(requested)
+        sample = np.linspace(0.0, 1.0, 256)
+        rgba = cmap(sample)
+        return [(float(p), tuple((row[:3] * 255).astype(np.uint8))) for p, row in zip(sample, rgba)]
+    except Exception:
+        named = _NAMED_COLOR_STOPS.get("viridis", _NAMED_COLOR_STOPS["thermal"])
+        return [(position, _parse_hex_color(color)) for position, color in named]
 
 def _render_array_to_png(values, cfg, *, vmin=None, vmax=None, cmap_name=None):
     arr = np.asarray(values, dtype=np.float64).squeeze()
