@@ -138,20 +138,39 @@ async def dataset_times(dataset_id: str, response: Response):
         values = await loop.run_in_executor(
             _executor, get_available_times, "thetao", cfg
         )
+        if not values:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "Unable to retrieve Copernicus time coordinate",
+                    "dataset_id": dataset_id,
+                    "reason": "Copernicus Marine dataset returned no timestamps.",
+                },
+            )
         response.headers["Cache-Control"] = "public, max-age=3600"
         return {
             "dataset_id": dataset_id,
             "count": len(values),
-            "start": values[0] if values else None,
-            "end": values[-1] if values else None,
-            "start_date": values[0] if values else None,
-            "end_date": values[-1] if values else None,
+            "start": values[0],
+            "end": values[-1],
+            "start_date": values[0],
+            "end_date": values[-1],
             "timestamps": values,
             "available_dates": values,
             "temporal_resolution": "P1D",
         }
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(502, f"Unable to retrieve Copernicus times: {exc}") from exc
+        logger.exception("[ONLINE] dataset_times failed for %s", dataset_id)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "Unable to retrieve Copernicus time coordinate",
+                "dataset_id": dataset_id,
+                "reason": str(exc),
+            },
+        ) from exc
 
 @router.get("/data")
 async def online_data(
@@ -227,9 +246,8 @@ async def latest(variable: str):
             raise HTTPException(404, "Dataset has no time coordinate.")
         return {
             "variable": variable,
-            "display_name": cfg["display_name"],
-            "latest_date": value,
             "dataset_id": cfg["dataset_id"],
+            "latest_date": value,
         }
     except HTTPException:
         raise
@@ -245,20 +263,42 @@ async def times(variable: str, response: Response):
         values = await loop.run_in_executor(
             _executor, get_available_times, variable, cfg
         )
+        if not values:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "Unable to retrieve Copernicus time coordinate",
+                    "dataset_id": cfg["dataset_id"],
+                    "variable": variable,
+                    "reason": "Copernicus Marine dataset returned no timestamps.",
+                },
+            )
         response.headers["Cache-Control"] = "public, max-age=3600"
         return {
             "variable": variable,
             "dataset_id": cfg["dataset_id"],
             "count": len(values),
-            "start": values[0] if values else None,
-            "end": values[-1] if values else None,
-            "start_date": values[0] if values else None,
-            "end_date": values[-1] if values else None,
+            "start": values[0],
+            "end": values[-1],
+            "start_date": values[0],
+            "end_date": values[-1],
             "timestamps": values,
             "available_dates": values,
+            "temporal_resolution": "P1D",
         }
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(502, f"Unable to retrieve Copernicus times: {exc}") from exc
+        logger.exception("[ONLINE] times failed for variable %s", variable)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "Unable to retrieve Copernicus time coordinate",
+                "dataset_id": cfg["dataset_id"],
+                "variable": variable,
+                "reason": str(exc),
+            },
+        ) from exc
 
 @router.get("/{variable}/frame.png")
 async def frame(

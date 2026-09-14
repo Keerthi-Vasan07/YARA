@@ -55,11 +55,25 @@ def _safe_close(ds):
 @lru_cache(maxsize=16)
 def _open_dataset_cached(dataset_id: str, variable: str):
     _require_dependencies()
-    logger.info("[COPERNICUS] Opening dataset=%s variable=%s", dataset_id, variable)
-    return copernicusmarine.open_dataset(
-        dataset_id=dataset_id,
-        variables=[variable],
-    )
+    username = os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME") or os.environ.get("COPERNICUS_USERNAME")
+    password = os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD") or os.environ.get("COPERNICUS_PASSWORD")
+    kwargs: Dict[str, Any] = {
+        "dataset_id": dataset_id,
+        "variables": [variable],
+    }
+    if username:
+        kwargs["username"] = username
+    if password:
+        kwargs["password"] = password
+    logger.info("[COPERNICUS] Opening dataset=%s variable=%s username_set=%s", dataset_id, variable, bool(username))
+    try:
+        ds = copernicusmarine.open_dataset(**kwargs)
+        if ds is None:
+            raise RuntimeError(f"copernicusmarine.open_dataset returned None for dataset '{dataset_id}' variable '{variable}'.")
+        return ds
+    except Exception as exc:
+        logger.error("[COPERNICUS] Failed to open dataset=%s variable=%s: %s", dataset_id, variable, exc)
+        raise RuntimeError(f"Copernicus Marine dataset opening failed for '{dataset_id}' variable '{variable}': {exc}") from exc
 
 def open_remote_dataset(
     variable: str,
@@ -75,10 +89,16 @@ def open_remote_dataset(
     end_datetime: str | None = None,
 ):
     _require_dependencies()
+    username = os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME") or os.environ.get("COPERNICUS_USERNAME")
+    password = os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD") or os.environ.get("COPERNICUS_PASSWORD")
     kwargs: Dict[str, Any] = {
         "dataset_id": cfg["dataset_id"],
         "variables": [variable],
     }
+    if username:
+        kwargs["username"] = username
+    if password:
+        kwargs["password"] = password
     optional = {
         "minimum_longitude": minimum_longitude,
         "maximum_longitude": maximum_longitude,
@@ -91,7 +111,10 @@ def open_remote_dataset(
     }
     kwargs.update({k: v for k, v in optional.items() if v is not None})
     logger.info("[COPERNICUS] subset request=%s", kwargs)
-    return copernicusmarine.open_dataset(**kwargs)
+    ds = copernicusmarine.open_dataset(**kwargs)
+    if ds is None:
+        raise RuntimeError(f"copernicusmarine.open_dataset returned None for subset request on '{cfg['dataset_id']}'")
+    return ds
 
 def _format_time_value(val: Any, attrs: dict[str, Any] | None = None) -> str:
     if val is None:
@@ -203,35 +226,21 @@ def find_time_coordinate(ds: Any) -> tuple[Optional[str], Optional[Any]]:
     variables = getattr(ds, "variables", None) or getattr(ds, "data_vars", None)
     dims = getattr(ds, "dims", None)
 
-    # 1. Direct candidate match (prefer "time", then "datetime", "date", "t", "time_counter")
-    for candidate in ("time", "datetime", "date", "t", "time_counter"):
-        if coords is not None and candidate in coords:
-            return candidate, coords[candidate]
-        if variables is not None and candidate in variables:
-            return candidate, variables[candidate]
-        if dims is not None and (candidate in dims if isinstance(dims, (dict, list, tuple)) else False):
-            if hasattr(ds, "__getitem__"):
-                try:
-                    return candidate, ds[candidate]
-                except Exception:
-                    pass
+    candidates = ("time", "t", "time_counter", "datetime", "date", "TIME", "Time")
 
-    # 2. Case-insensitive search
-    all_keys = []
+    # A. Search ds.coords for exact candidates
     if coords is not None:
-        all_keys.extend(list(coords.keys()))
+        for c in candidates:
+            if c in coords:
+                return c, coords[c]
+
+    # B. Search ds.variables for exact candidates
     if variables is not None:
-        all_keys.extend(list(variables.keys()))
-    if dims is not None:
-        all_keys.extend(list(dims.keys()) if isinstance(dims, dict) else list(dims))
+        for c in candidates:
+            if c in variables:
+                return c, variables[c]
 
-    for key in all_keys:
-        if str(key).lower() in ("time", "datetime", "date", "t", "time_counter"):
-            coord = get_coord(ds, str(key))
-            if coord is not None:
-                return str(key), coord
-
-    # 3. Metadata inspection (axis=="T" or standard_name=="time")
+    # C. CF metadata inspection (axis=="T" or standard_name=="time")
     if coords is not None:
         for key, coord in coords.items():
             attrs = getattr(coord, "attrs", {}) or {}
@@ -240,81 +249,45 @@ def find_time_coordinate(ds: Any) -> tuple[Optional[str], Optional[Any]]:
             if axis == "T" or std_name == "time":
                 return str(key), coord
 
+    if variables is not None:
+        for key, var_obj in variables.items():
+            attrs = getattr(var_obj, "attrs", {}) or {}
+            axis = str(attrs.get("axis", "")).upper()
+            std_name = str(attrs.get("standard_name", "")).lower()
+            if axis == "T" or std_name == "time":
+                return str(key), var_obj
+
+    # D. Common names case-insensitive search
+    all_keys = []
+    if coords is not None:
+        all_keys.extend([str(k) for k in coords.keys()])
+    if variables is not None:
+        all_keys.extend([str(k) for k in variables.keys()])
+    if dims is not None:
+        all_keys.extend([str(k) for k in (dims.keys() if isinstance(dims, dict) else dims)])
+
+    for key in all_keys:
+        if key.lower() in ("time", "t", "time_counter", "datetime", "date"):
+            coord = get_coord(ds, key)
+            if coord is not None:
+                return key, coord
+
+    # E. Metadata inspection (long_name contains "time")
+    if coords is not None:
+        for key, coord in coords.items():
+            attrs = getattr(coord, "attrs", {}) or {}
+            long_name = str(attrs.get("long_name", "")).lower()
+            if "time" in long_name:
+                return str(key), coord
+
+    if variables is not None:
+        for key, var_obj in variables.items():
+            attrs = getattr(var_obj, "attrs", {}) or {}
+            long_name = str(attrs.get("long_name", "")).lower()
+            if "time" in long_name:
+                return str(key), var_obj
+
     return None, None
-
-def inspect_dataset_metadata(variable: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
-    # IMPORTANT: ds comes from lru_cache — do NOT close it.
-    ds = _open_dataset_cached(cfg["dataset_id"], variable)
-    if ds is None:
-        raise ValueError(f"Unable to open dataset for '{variable}' ({cfg['dataset_id']}).")
-    
-    data_vars = getattr(ds, "data_vars", None)
-    if data_vars is not None and variable not in data_vars:
-        raise ValueError(
-            f"Variable '{variable}' not returned by dataset. "
-            f"Available: {list(data_vars)}"
-        )
-    da = ds[variable]
-    da_attrs = getattr(da, "attrs", {}) or {}
-    result = {
-        "variable_key": variable,
-        "dataset_id": cfg["dataset_id"],
-        "display_name": cfg["display_name"],
-        "units": cfg["units_display"],
-        "source": cfg["source"],
-        "provider": cfg["provider"],
-        "description": cfg["description"],
-        "opendap_url": cfg["opendap_url"],
-        "variable_name": variable,
-        "variable_attrs": {str(k): str(v) for k, v in da_attrs.items()},
-        "dimensions": list(getattr(da, "dims", [])),
-        "shape": [int(x) for x in getattr(da, "shape", [])],
-        "is_3d": bool(cfg.get("is_3d", False)),
-        "vmin": cfg["vmin"],
-        "vmax": cfg["vmax"],
-        "log_scale": cfg.get("log_scale", False),
-        "colormap": cfg.get("colormap", "viridis"),
-        "spatial_resolution_deg": cfg["spatial_resolution_deg"],
-    }
-    for name in ("latitude", "lat"):
-        if has_coord(ds, name):
-            result["lat_dim"] = name
-            coord = get_coord(ds, name)
-            vals = np.asarray(getattr(coord, "values", []))
-            result["n_lat"] = int(vals.size)
-            if vals.size:
-                result["lat_range"] = [
-                    float(np.nanmin(vals)),
-                    float(np.nanmax(vals)),
-                ]
-            break
-    for name in ("longitude", "lon"):
-        if has_coord(ds, name):
-            result["lon_dim"] = name
-            coord = get_coord(ds, name)
-            vals = np.asarray(getattr(coord, "values", []))
-            result["n_lon"] = int(vals.size)
-            if vals.size:
-                result["lon_range"] = [
-                    float(np.nanmin(vals)),
-                    float(np.nanmax(vals)),
-                ]
-            break
-
-    time_name, time_coord = find_time_coordinate(ds)
-    if time_name and time_coord is not None:
-        result["time_dim"] = time_name
-        encoding = getattr(time_coord, "encoding", {}) or {}
-        attrs_dict = getattr(time_coord, "attrs", {}) or {}
-        attrs = {**encoding, **attrs_dict}
-        vals = np.asarray(getattr(time_coord, "values", []))
-        result["n_times"] = int(vals.size)
-        if vals.size:
-            start_str = _format_time_value(vals.flat[0], attrs)
-            end_str = _format_time_value(vals.flat[-1], attrs)
-            result["time_range"] = [start_str, end_str]
-
-    return result
 
 def get_available_times(variable: str, cfg: Dict[str, Any]) -> list[str]:
     dataset_id = cfg.get("dataset_id", "unknown")
@@ -334,19 +307,29 @@ def get_available_times(variable: str, cfg: Dict[str, Any]) -> list[str]:
     coords_attr = getattr(ds, "coords", None)
     avail_coords = list(coords_attr.keys()) if coords_attr is not None else []
 
-    time_name, time_coord = find_time_coordinate(ds)
+    vars_attr = getattr(ds, "variables", None) or getattr(ds, "data_vars", None)
+    avail_vars = list(vars_attr.keys()) if vars_attr is not None else []
 
     logger.info(
-        "[COPERNICUS TIME EXTRACTION] dataset_id=%s opendap_url=%s obj_type=%s dims=%s coords=%s selected_time_coord=%s",
-        dataset_id, opendap_url, obj_type, avail_dims, avail_coords, time_name
+        "[COPERNICUS DEBUG] dataset_id=%s opendap_url=%s obj_type=%s dims=%s coords=%s vars=%s",
+        dataset_id, opendap_url, obj_type, avail_dims, avail_coords, avail_vars
     )
 
-    if ds is None or time_coord is None:
-        logger.error(
-            "[COPERNICUS TIME EXTRACTION FAILED] dataset_id=%s opendap_url=%s obj_type=%s: Dataset or time coordinate is None",
-            dataset_id, opendap_url, obj_type
+    if ds is None:
+        raise RuntimeError(
+            f"Unable to retrieve Copernicus dataset '{dataset_id}'. "
+            f"copernicusmarine.open_dataset returned None."
         )
-        return []
+
+    time_name, time_coord = find_time_coordinate(ds)
+
+    logger.info("[COPERNICUS DEBUG] selected_time_coord=%s", time_name)
+
+    if time_coord is None:
+        raise RuntimeError(
+            f"Unable to locate time coordinate in Copernicus dataset '{dataset_id}' variable '{variable}'. "
+            f"Dataset object_type={obj_type}, dims={avail_dims}, coords={avail_coords}, vars={avail_vars}"
+        )
 
     encoding = getattr(time_coord, "encoding", {}) or {}
     attrs_dict = getattr(time_coord, "attrs", {}) or {}
@@ -354,18 +337,26 @@ def get_available_times(variable: str, cfg: Dict[str, Any]) -> list[str]:
 
     raw_vals = getattr(time_coord, "values", None)
     if raw_vals is None:
-        logger.error("[COPERNICUS TIME EXTRACTION FAILED] time coordinate '%s' has None values", time_name)
-        return []
+        raise RuntimeError(
+            f"Unable to retrieve Copernicus time values: coordinate '{time_name}' in dataset '{dataset_id}' has None values."
+        )
 
     values = np.asarray(raw_vals)
     if values.size == 0:
-        return []
+        raise RuntimeError(
+            f"Unable to retrieve Copernicus time values: coordinate '{time_name}' in dataset '{dataset_id}' has 0 values."
+        )
 
     out = []
     for v in (values.flat if values.ndim > 0 else [values.item()]):
         formatted = _format_time_value(v, attrs)
         if formatted:
             out.append(formatted)
+
+    if not out:
+        raise RuntimeError(
+            f"Unable to retrieve Copernicus time values: failed to format ISO-8601 timestamps from coordinate '{time_name}' in dataset '{dataset_id}'."
+        )
 
     return out
 
