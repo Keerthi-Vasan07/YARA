@@ -1,182 +1,204 @@
-"""Provider-neutral online dataset API.
+"""
+YARA Online Ocean Data API.
 
-Local uploads remain served exclusively by ``/api/local-dataset``. This router
-only exposes registry-backed remote data and never leaks a provider URL to the
-frontend request contract.
+The UI consumes these routes. The registry is Copernicus-centric and exposes
+the same stable route shape for all 11 scientific variables.
 """
 
-from __future__ import annotations
-
 import asyncio
-import io
 import logging
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from threading import RLock
+from typing import Optional
 
-import matplotlib
-import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
-from PIL import Image
 
-from server.data_sources.online_registry import ONLINE_DATASETS, get_dataset, get_variable
-from server.data_sources.providers import OPeNDAPProvider, ProviderError
+from server.data_sources.online_registry import (
+    ONLINE_DATASETS,
+    COPERNICUS_DATASET,
+    get_dataset_config,
+)
+from server.data_sources.erddap_opendap import (
+    HAS_XARRAY,
+    HAS_COPERNICUS,
+    inspect_dataset_metadata,
+    get_latest_time,
+    get_available_times,
+    render_to_png,
+    query_point,
+)
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/online", tags=["Online datasets"])
-provider = OPeNDAPProvider()
-executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yara-opendap")
-_frame_cache: OrderedDict[tuple, tuple[bytes, dict[str, str]]] = OrderedDict()
-_cache_lock = RLock()
-_FRAME_CACHE_SIZE = 24
+router = APIRouter(prefix="/api/online", tags=["Online / Copernicus OPeNDAP"])
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="online")
 
+def _require_backend():
+    if not HAS_XARRAY:
+        raise HTTPException(503, "xarray is not installed.")
+    if not HAS_COPERNICUS:
+        raise HTTPException(503, "copernicusmarine is not installed.")
 
-def _dataset_or_404(dataset_id: str):
+def _cfg(variable: str):
     try:
-        return get_dataset(dataset_id)
+        return get_dataset_config(variable)
     except KeyError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-
-def _variable_or_404(dataset_id: str, variable: str):
-    try:
-        return get_variable(dataset_id, variable)
-    except KeyError as exc:
-        raise HTTPException(404, str(exc)) from exc
-
-
-def _api_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, ProviderError):
-        return HTTPException(status_code=422, detail=str(exc))
-    logger.exception("Online provider request failed")
-    return HTTPException(status_code=502, detail=f"Unable to retrieve online dataset: {exc}")
-
-
-def _edge_bounds(values: np.ndarray) -> tuple[float, float]:
-    values = np.asarray(values, dtype=float)
-    if len(values) == 1:
-        return float(values[0]), float(values[0])
-    step = float(np.median(np.abs(np.diff(values))))
-    return float(np.nanmin(values) - step / 2), float(np.nanmax(values) + step / 2)
-
-
-def _render(dataset_id: str, variable_id: str, timestamp: str, *, lat_min: float, lat_max: float, lon_min: float, lon_max: float, max_pixels: int, colormap: str, vmin: float | None, vmax: float | None) -> tuple[bytes, dict[str, str]]:
-    dataset = get_dataset(dataset_id)
-    variable = get_variable(dataset_id, variable_id)
-    cache_key = (dataset.provider, dataset_id, variable_id, timestamp, lat_min, lat_max, lon_min, lon_max, max_pixels, colormap, vmin, vmax)
-    with _cache_lock:
-        cached = _frame_cache.get(cache_key)
-        if cached:
-            _frame_cache.move_to_end(cache_key)
-            return cached
-    grid = provider.get_data(dataset, variable_id, timestamp, lat_min=lat_min, lat_max=lat_max, lon_min=lon_min, lon_max=lon_max, max_pixels=max_pixels)
-    finite = np.isfinite(grid.values)
-    if not finite.any():
-        raise ProviderError(f"No valid '{variable_id}' observations are available for {grid.timestamp} in this area.")
-    low = float(variable.vmin if vmin is None else vmin)
-    high = float(variable.vmax if vmax is None else vmax)
-    if not np.isfinite(low) or not np.isfinite(high) or low >= high:
-        raise ProviderError("Color-scale limits must be finite and minimum must be smaller than maximum.")
-    values = grid.values
-    if variable.log_scale:
-        valid = finite & (values > 0)
-        values = np.where(valid, np.log10(values), np.nan)
-        low, high = np.log10(low), np.log10(high)
-        finite = valid
-    normalized = np.clip((values - low) / (high - low), 0, 1)
-    cmap = matplotlib.colormaps.get(colormap, matplotlib.colormaps["viridis"])
-    rgba = (cmap(normalized) * 255).astype(np.uint8)
-    rgba[..., 3] = np.where(finite, 255, 0).astype(np.uint8)
-    if len(grid.latitude) > 1 and grid.latitude[0] < grid.latitude[-1]:
-        rgba = np.flipud(rgba)
-    west, east = _edge_bounds(grid.longitude)
-    south, north = _edge_bounds(grid.latitude)
-    output = io.BytesIO()
-    Image.fromarray(rgba, "RGBA").save(output, format="PNG", optimize=True)
-    headers = {
-        "X-Dataset-Id": dataset_id, "X-Variable": variable_id, "X-Time-Matched": grid.timestamp,
-        "X-Bounds-West": str(west), "X-Bounds-South": str(south), "X-Bounds-East": str(east), "X-Bounds-North": str(north),
-        "X-Raster-Width": str(rgba.shape[1]), "X-Raster-Height": str(rgba.shape[0]),
-        "X-Units": grid.variable.units, "X-ColorMap": colormap,
-        "X-Color-Min": str(variable.vmin if vmin is None else vmin), "X-Color-Max": str(variable.vmax if vmax is None else vmax),
-        "Access-Control-Expose-Headers": "X-Dataset-Id, X-Variable, X-Time-Matched, X-Bounds-West, X-Bounds-South, X-Bounds-East, X-Bounds-North, X-Raster-Width, X-Raster-Height, X-Units, X-ColorMap, X-Color-Min, X-Color-Max",
-    }
-    result = (output.getvalue(), headers)
-    with _cache_lock:
-        _frame_cache[cache_key] = result
-        _frame_cache.move_to_end(cache_key)
-        while len(_frame_cache) > _FRAME_CACHE_SIZE:
-            _frame_cache.popitem(last=False)
-    return result
-
+        raise HTTPException(
+            404,
+            f"Unknown online variable '{variable}'. "
+            f"Available: {list(ONLINE_DATASETS)}",
+        ) from exc
 
 @router.get("/datasets")
 async def list_datasets():
-    """Return declarative public dataset metadata, grouped by dataset not variable."""
-    return {"datasets": [dataset.public() for dataset in ONLINE_DATASETS.values()]}
+    return {
+        key: {
+            "variable_key": key,
+            "dataset_id": cfg["dataset_id"],
+            "display_name": cfg["display_name"],
+            "units_display": cfg["units_display"],
+            "temporal_resolution": cfg["temporal_resolution"],
+            "spatial_resolution_deg": cfg["spatial_resolution_deg"],
+            "vmin": cfg["vmin"], "vmax": cfg["vmax"],
+            "log_scale": cfg.get("log_scale", False),
+            "colormap": cfg.get("colormap", "viridis"),
+            "colorbar_label": cfg["colorbar_label"],
+            "description": cfg["description"],
+            "source": cfg["source"], "provider": cfg["provider"],
+            "opendap_url": cfg["opendap_url"],
+            "dimensions": cfg["dimensions"],
+            "is_3d": cfg["is_3d"],
+        }
+        for key, cfg in ONLINE_DATASETS.items()
+    }
 
+@router.get("/catalog")
+async def catalog():
+    return {
+        "dataset": COPERNICUS_DATASET,
+        "variables": list_datasets.__annotations__ and list(ONLINE_DATASETS.keys()),
+    }
 
-@router.get("/datasets/{dataset_id}")
-async def dataset_detail(dataset_id: str):
-    return _dataset_or_404(dataset_id).public()
-
-
-@router.get("/datasets/{dataset_id}/variables")
-async def dataset_variables(dataset_id: str):
-    dataset = _dataset_or_404(dataset_id)
+@router.get("/{variable}/metadata")
+async def metadata(variable: str):
+    _require_backend()
+    cfg = _cfg(variable)
+    loop = asyncio.get_running_loop()
     try:
-        inspection = await asyncio.get_running_loop().run_in_executor(executor, provider.inspect_dataset, dataset)
-        return {"dataset_id": dataset_id, "variables": inspection.variables}
+        return await loop.run_in_executor(
+            _executor, inspect_dataset_metadata, variable, cfg
+        )
     except Exception as exc:
-        raise _api_error(exc)
+        logger.exception("[ONLINE] metadata failed for %s", variable)
+        raise HTTPException(502, f"Unable to retrieve Copernicus metadata: {exc}") from exc
 
-
-@router.get("/datasets/{dataset_id}/metadata")
-async def dataset_metadata(dataset_id: str):
-    dataset = _dataset_or_404(dataset_id)
+@router.get("/{variable}/latest")
+async def latest(variable: str):
+    _require_backend()
+    cfg = _cfg(variable)
+    loop = asyncio.get_running_loop()
     try:
-        inspection = await asyncio.get_running_loop().run_in_executor(executor, provider.inspect_dataset, dataset)
-        payload = dataset.public()
-        payload["inspection"] = inspection.public()
-        return payload
+        value = await loop.run_in_executor(
+            _executor, get_latest_time, variable, cfg
+        )
+        if value is None:
+            raise HTTPException(404, "Dataset has no time coordinate.")
+        return {
+            "variable": variable,
+            "display_name": cfg["display_name"],
+            "latest_date": value,
+            "dataset_id": cfg["dataset_id"],
+        }
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise _api_error(exc)
+        raise HTTPException(502, f"Unable to retrieve latest Copernicus time: {exc}") from exc
 
-
-@router.get("/datasets/{dataset_id}/times")
-async def dataset_times(dataset_id: str):
-    dataset = _dataset_or_404(dataset_id)
+@router.get("/{variable}/times")
+async def times(variable: str):
+    _require_backend()
+    cfg = _cfg(variable)
+    loop = asyncio.get_running_loop()
     try:
-        inspection = await asyncio.get_running_loop().run_in_executor(executor, provider.inspect_dataset, dataset)
-        return {"dataset_id": dataset_id, "start": inspection.time_range[0], "end": inspection.time_range[1], "temporal_resolution": inspection.temporal_resolution, "timestamps": inspection.timestamps}
+        values = await loop.run_in_executor(
+            _executor, get_available_times, variable, cfg
+        )
+        return {
+            "variable": variable,
+            "dataset_id": cfg["dataset_id"],
+            "count": len(values),
+            "start_date": values[0] if values else None,
+            "end_date": values[-1] if values else None,
+            "available_dates": values,
+        }
     except Exception as exc:
-        raise _api_error(exc)
+        raise HTTPException(502, f"Unable to retrieve Copernicus times: {exc}") from exc
 
-
-@router.get("/data")
-async def get_data(
-    dataset_id: str, variable: str, time: str,
-    lat_min: float = Query(-90, ge=-90, le=90), lat_max: float = Query(90, ge=-90, le=90),
-    lon_min: float = Query(-180, ge=-180, le=180), lon_max: float = Query(180, ge=-180, le=180),
-    max_pixels: int = Query(1536, ge=128, le=4096), colormap: str = Query("viridis", max_length=100),
-    vmin: float | None = None, vmax: float | None = None,
+@router.get("/{variable}/frame.png")
+async def frame(
+    variable: str,
+    date: str = Query("latest"),
+    lat_min: float = Query(-80.0, ge=-90, le=90),
+    lat_max: float = Query(90.0, ge=-90, le=90),
+    lon_min: float = Query(-180.0, ge=-180, le=180),
+    lon_max: float = Query(180.0, ge=-180, le=180),
+    max_pixels: int = Query(2048, ge=64, le=4096),
+    colormap: Optional[str] = None,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
 ):
-    """Return a normalized scalar frame encoded for the existing Cesium layer."""
-    _dataset_or_404(dataset_id)
-    _variable_or_404(dataset_id, variable)
+    _require_backend()
+    cfg = _cfg(variable)
+    if lat_min > lat_max or lon_min > lon_max:
+        raise HTTPException(400, "Minimum coordinate must not exceed maximum coordinate.")
+    loop = asyncio.get_running_loop()
     try:
-        png, headers = await asyncio.get_running_loop().run_in_executor(executor, lambda: _render(dataset_id, variable, time, lat_min=lat_min, lat_max=lat_max, lon_min=lon_min, lon_max=lon_max, max_pixels=max_pixels, colormap=colormap, vmin=vmin, vmax=vmax))
-        return Response(png, media_type="image/png", headers=headers)
+        png, matched, bounds = await loop.run_in_executor(
+            _executor, render_to_png, variable, cfg, date,
+            lat_min, lat_max, lon_min, lon_max, max_pixels,
+            colormap, vmin, vmax,
+        )
+        return Response(
+            content=png,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "public, max-age=300",
+                "X-Date-Matched": str(matched),
+                "X-Variable": variable,
+                "X-Dataset-Id": cfg["dataset_id"],
+                "X-Bounds-West": str(bounds["west"]),
+                "X-Bounds-South": str(bounds["south"]),
+                "X-Bounds-East": str(bounds["east"]),
+                "X-Bounds-North": str(bounds["north"]),
+                "X-Raster-Width": str(bounds.get("width", 0)),
+                "X-Raster-Height": str(bounds.get("height", 0)),
+                "Access-Control-Expose-Headers":
+                    "X-Date-Matched, X-Variable, X-Dataset-Id, "
+                    "X-Bounds-West, X-Bounds-South, X-Bounds-East, X-Bounds-North, "
+                    "X-Raster-Width, X-Raster-Height",
+            },
+        )
     except Exception as exc:
-        raise _api_error(exc)
+        logger.exception("[ONLINE] frame failed for %s", variable)
+        raise HTTPException(
+            502, f"Unable to render Copernicus frame for '{variable}': {exc}"
+        ) from exc
 
-
-@router.get("/point")
-async def get_point(dataset_id: str, variable: str, time: str, lon: float = Query(..., ge=-180, le=180), lat: float = Query(..., ge=-90, le=90)):
-    dataset = _dataset_or_404(dataset_id)
-    _variable_or_404(dataset_id, variable)
+@router.get("/{variable}/point")
+async def point(
+    variable: str,
+    date: str = Query("latest"),
+    lon: float = Query(..., ge=-180, le=180),
+    lat: float = Query(..., ge=-90, le=90),
+):
+    _require_backend()
+    cfg = _cfg(variable)
+    loop = asyncio.get_running_loop()
     try:
-        return await asyncio.get_running_loop().run_in_executor(executor, lambda: provider.get_point_value(dataset, variable, time, latitude=lat, longitude=lon))
+        return await loop.run_in_executor(
+            _executor, query_point, variable, cfg, date, lon, lat
+        )
     except Exception as exc:
-        raise _api_error(exc)
+        logger.exception("[ONLINE] point failed for %s", variable)
+        raise HTTPException(
+            502, f"Unable to query Copernicus point for '{variable}': {exc}"
+        ) from exc

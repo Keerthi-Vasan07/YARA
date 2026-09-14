@@ -1,27 +1,28 @@
 """
-Copernicus Marine remote data access for YARA.
+Copernicus Marine remote data engine for YARA.
 
-Uses:
-    copernicusmarine.open_dataset()
-    xarray
-    dask
-
-Data is requested remotely and subsetted before values are loaded.
+IMPORTANT:
+- Uses copernicusmarine.open_dataset() for Copernicus access.
+- Does not download the global 179 TB dataset.
+- Applies variable/time/spatial/depth subsetting before .load().
+- Handles both 4-D variables and surface 2-D fields.
+- Uses matplotlib.colormaps.get_cmap-compatible API to avoid the
+  matplotlib.cm.get_cmap removal error seen in the previous server.
 """
 
 from __future__ import annotations
 
 import io
-import math
 import logging
+import math
+import re
 from functools import lru_cache
-from typing import Any, Dict, Tuple, Sequence
+from typing import Any, Dict, Optional
 
 import numpy as np
 import matplotlib
-
-logger = logging.getLogger(__name__)
-
+from matplotlib import colormaps
+from PIL import Image
 
 try:
     import xarray as xr
@@ -30,7 +31,6 @@ except ImportError:
     xr = None
     HAS_XARRAY = False
 
-
 try:
     import copernicusmarine
     HAS_COPERNICUS = True
@@ -38,53 +38,28 @@ except ImportError:
     copernicusmarine = None
     HAS_COPERNICUS = False
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
 
 def _require_dependencies():
     if not HAS_XARRAY:
         raise RuntimeError("xarray is not installed")
-
     if not HAS_COPERNICUS:
-        raise RuntimeError(
-            "copernicusmarine is not installed"
-        )
+        raise RuntimeError("copernicusmarine is not installed")
 
-
-def _dataset_id(cfg: Dict[str, Any]) -> str:
-    return cfg["dataset_id"]
-
+def _safe_close(ds):
+    try:
+        ds.close()
+    except Exception:
+        pass
 
 @lru_cache(maxsize=16)
-def _open_dataset_cached(
-    dataset_id: str,
-    variable: str,
-):
-    """
-    Open the Copernicus dataset lazily.
-
-    IMPORTANT:
-    This does NOT download the full dataset.
-    xarray/Dask keeps the remote arrays lazy.
-    """
-
+def _open_dataset_cached(dataset_id: str, variable: str):
     _require_dependencies()
-
-    logger.info(
-        "[COPERNICUS] Opening dataset=%s variable=%s",
-        dataset_id,
-        variable,
-    )
-
-    ds = copernicusmarine.open_dataset(
+    logger.info("[COPERNICUS] Opening dataset=%s variable=%s", dataset_id, variable)
+    return copernicusmarine.open_dataset(
         dataset_id=dataset_id,
         variables=[variable],
     )
-
-    return ds
-
 
 def open_remote_dataset(
     variable: str,
@@ -99,299 +74,306 @@ def open_remote_dataset(
     start_datetime: str | None = None,
     end_datetime: str | None = None,
 ):
-    """
-    Open only the requested Copernicus subset.
-
-    Latitude bounds are safely clamped to the dataset's actual coordinate
-    range so the frontend does not need to know dataset-specific limits.
-    """
-
     _require_dependencies()
-
-    # --- Safe latitude clamping against actual dataset bounds ---
-    # The cached dataset gives us the real lat range without a new network call.
-    if minimum_latitude is not None or maximum_latitude is not None:
-        try:
-            cached_ds = _open_dataset_cached(_dataset_id(cfg), variable)
-            if "latitude" in cached_ds.coords:
-                lat_vals = cached_ds["latitude"].values
-                ds_lat_min = float(lat_vals.min())
-                ds_lat_max = float(lat_vals.max())
-                if minimum_latitude is not None:
-                    clamped_min = max(minimum_latitude, ds_lat_min)
-                    if clamped_min != minimum_latitude:
-                        logger.info(
-                            "[COPERNICUS] Clamped minimum_latitude %.2f → %.2f (dataset range)",
-                            minimum_latitude, clamped_min,
-                        )
-                    minimum_latitude = clamped_min
-                if maximum_latitude is not None:
-                    clamped_max = min(maximum_latitude, ds_lat_max)
-                    if clamped_max != maximum_latitude:
-                        logger.info(
-                            "[COPERNICUS] Clamped maximum_latitude %.2f → %.2f (dataset range)",
-                            maximum_latitude, clamped_max,
-                        )
-                    maximum_latitude = clamped_max
-        except Exception as exc:
-            logger.debug("[COPERNICUS] Could not clamp lat bounds: %s", exc)
-
     kwargs: Dict[str, Any] = {
-        "dataset_id": _dataset_id(cfg),
+        "dataset_id": cfg["dataset_id"],
         "variables": [variable],
     }
-
-    if minimum_longitude is not None:
-        kwargs["minimum_longitude"] = minimum_longitude
-
-    if maximum_longitude is not None:
-        kwargs["maximum_longitude"] = maximum_longitude
-
-    if minimum_latitude is not None:
-        kwargs["minimum_latitude"] = minimum_latitude
-
-    if maximum_latitude is not None:
-        kwargs["maximum_latitude"] = maximum_latitude
-
-    if minimum_depth is not None:
-        kwargs["minimum_depth"] = minimum_depth
-
-    if maximum_depth is not None:
-        kwargs["maximum_depth"] = maximum_depth
-
-    if start_datetime is not None:
-        kwargs["start_datetime"] = start_datetime
-
-    if end_datetime is not None:
-        kwargs["end_datetime"] = end_datetime
-
-    logger.info(
-        "[COPERNICUS] subset request: %s",
-        kwargs,
-    )
-
+    optional = {
+        "minimum_longitude": minimum_longitude,
+        "maximum_longitude": maximum_longitude,
+        "minimum_latitude": minimum_latitude,
+        "maximum_latitude": maximum_latitude,
+        "minimum_depth": minimum_depth,
+        "maximum_depth": maximum_depth,
+        "start_datetime": start_datetime,
+        "end_datetime": end_datetime,
+    }
+    kwargs.update({k: v for k, v in optional.items() if v is not None})
+    logger.info("[COPERNICUS] subset request=%s", kwargs)
     return copernicusmarine.open_dataset(**kwargs)
 
-
-# ---------------------------------------------------------------------------
-# Metadata
-# ---------------------------------------------------------------------------
-
-def inspect_dataset_metadata(
-    variable: str,
-    cfg: Dict[str, Any],
-) -> Dict[str, Any]:
-
-    ds = _open_dataset_cached(
-        _dataset_id(cfg),
-        variable,
-    )
-
+def inspect_dataset_metadata(variable: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    ds = _open_dataset_cached(cfg["dataset_id"], variable)
     try:
-        data = ds[variable]
-
-        dimensions = {}
-
-        for dim in data.dims:
-            coord = ds.coords.get(dim)
-
-            info: Dict[str, Any] = {
-                "size": int(ds.sizes[dim]),
-            }
-
-            if coord is not None:
-                try:
-                    values = coord.values
-
-                    if values.size:
-                        info["min"] = str(values.min())
-                        info["max"] = str(values.max())
-                except Exception:
-                    pass
-
-            dimensions[dim] = info
-
-        return {
-            "variable": variable,
-            "display_name": cfg["display_name"],
+        if variable not in ds.data_vars:
+            raise ValueError(
+                f"Variable '{variable}' not returned by dataset. "
+                f"Available: {list(ds.data_vars)}"
+            )
+        da = ds[variable]
+        result = {
+            "variable_key": variable,
             "dataset_id": cfg["dataset_id"],
-            "units": cfg["units"],
-            "units_display": cfg["units_display"],
-            "dimensions": dimensions,
-            "shape": list(data.shape),
-            "dtype": str(data.dtype),
-            "description": cfg["description"],
+            "display_name": cfg["display_name"],
+            "units": cfg["units_display"],
             "source": cfg["source"],
             "provider": cfg["provider"],
+            "description": cfg["description"],
+            "opendap_url": cfg["opendap_url"],
+            "variable_name": variable,
+            "variable_attrs": {str(k): str(v) for k, v in da.attrs.items()},
+            "dimensions": list(da.dims),
+            "shape": [int(x) for x in da.shape],
+            "is_3d": bool(cfg.get("is_3d", False)),
+            "vmin": cfg["vmin"],
+            "vmax": cfg["vmax"],
+            "log_scale": cfg.get("log_scale", False),
+            "colormap": cfg.get("colormap", "viridis"),
+            "spatial_resolution_deg": cfg["spatial_resolution_deg"],
         }
-
+        for name in ("latitude", "lat"):
+            if name in ds.coords:
+                result["lat_dim"] = name
+                result["n_lat"] = int(ds[name].size)
+                result["lat_range"] = [
+                    float(np.nanmin(ds[name].values)),
+                    float(np.nanmax(ds[name].values)),
+                ]
+                break
+        for name in ("longitude", "lon"):
+            if name in ds.coords:
+                result["lon_dim"] = name
+                result["n_lon"] = int(ds[name].size)
+                result["lon_range"] = [
+                    float(np.nanmin(ds[name].values)),
+                    float(np.nanmax(ds[name].values)),
+                ]
+                break
+        for name in ("time", "datetime", "date"):
+            if name in ds.coords:
+                result["time_dim"] = name
+                vals = np.asarray(ds[name].values)
+                result["n_times"] = int(vals.size)
+                if vals.size:
+                    result["time_range"] = [str(vals.flat[0]), str(vals.flat[-1])]
+                break
+        return result
     finally:
-        # Dataset remains cached/lazy.
-        pass
+        _safe_close(ds)
 
-
-# ---------------------------------------------------------------------------
-# Time
-# ---------------------------------------------------------------------------
-
-def get_latest_time(
-    variable: str,
-    cfg: Dict[str, Any],
-) -> str:
-
-    ds = _open_dataset_cached(
-        _dataset_id(cfg),
-        variable,
-    )
-
-    if "time" not in ds.coords:
-        raise ValueError(
-            f"Dataset for '{variable}' does not contain a time coordinate"
-        )
-
-    latest = ds["time"].values[-1]
-
-    return str(np.datetime_as_string(latest, unit="D"))
-
-
-def get_available_times(
-    variable: str,
-    cfg: Dict[str, Any],
-):
-
-    ds = _open_dataset_cached(
-        _dataset_id(cfg),
-        variable,
-    )
-
-    if "time" not in ds.coords:
-        return []
-
-    values = ds["time"].values
-
-    return [
-        str(np.datetime_as_string(value, unit="D"))
-        for value in values
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Date matching
-# ---------------------------------------------------------------------------
-
-def _select_date(ds, date: str):
-    """
-    Select exact date where possible.
-    Otherwise select nearest available timestamp.
-    """
-
-    if "time" not in ds.coords:
-        return ds, None
-
-    requested = np.datetime64(date)
-
+def get_available_times(variable: str, cfg: Dict[str, Any]) -> list[str]:
+    ds = _open_dataset_cached(cfg["dataset_id"], variable)
     try:
-        selected = ds.sel(
-            time=requested,
-            method="nearest",
-        )
+        name = next((n for n in ("time", "datetime", "date") if n in ds.coords), None)
+        if not name:
+            return []
+        values = np.asarray(ds[name].values)
+        out = []
+        for v in values.flat:
+            try:
+                out.append(np.datetime_as_string(np.datetime64(v), unit="s"))
+            except Exception:
+                out.append(str(v))
+        return out
+    finally:
+        _safe_close(ds)
 
-        matched = selected["time"].values
+def get_latest_time(variable: str, cfg: Dict[str, Any]) -> Optional[str]:
+    times = get_available_times(variable, cfg)
+    return times[-1] if times else None
 
-        if np.ndim(matched):
-            matched = matched.item()
+def _coord_name(ds, candidates):
+    for name in candidates:
+        if name in ds.coords:
+            return name
+    for name in ds.variables:
+        low = name.lower()
+        for candidate in candidates:
+            if candidate.lower() == low:
+                return name
+    return None
 
-        matched = str(
-            np.datetime_as_string(
-                np.datetime64(matched),
-                unit="D",
-            )
-        )
+def _time_select(ds, requested: str | None):
+    name = _coord_name(ds, ("time", "datetime", "date"))
+    if not name or ds[name].size == 0:
+        return ds, None
+    if requested in (None, "", "latest"):
+        actual = ds[name].values[-1]
+    else:
+        try:
+            target = np.datetime64(requested)
+            actual = ds[name].sel({name: target}, method="nearest").values
+        except Exception:
+            actual = ds[name].values[-1]
+    return ds.sel({name: actual}), str(actual)
 
-        return selected, matched
+def _slice_for_coord(coord, low, high):
+    values = np.asarray(coord.values)
+    if values.size < 2:
+        return slice(low, high)
+    ascending = bool(values[0] <= values[-1])
+    return slice(low, high) if ascending else slice(high, low)
 
-    except Exception as exc:
-        raise ValueError(
-            f"Unable to match date '{date}': {exc}"
-        ) from exc
+def _normalise_lon(lon: float) -> float:
+    x = ((float(lon) + 180.0) % 360.0) - 180.0
+    return x
 
+def _subset(
+    ds,
+    *,
+    lat_min: float,
+    lat_max: float,
+    lon_min: float,
+    lon_max: float,
+    requested_date: str | None,
+    depth_min: float | None = None,
+    depth_max: float | None = None,
+):
+    lat_name = _coord_name(ds, ("latitude", "lat"))
+    lon_name = _coord_name(ds, ("longitude", "lon"))
+    if lat_name:
+        ds = ds.sel({lat_name: _slice_for_coord(ds[lat_name], lat_min, lat_max)})
+    if lon_name:
+        # Most Copernicus grids are -180..180. Handle 0..360 safely.
+        lon_values = np.asarray(ds[lon_name].values)
+        qmin, qmax = lon_min, lon_max
+        if lon_values.size and np.nanmax(lon_values) > 180:
+            qmin, qmax = lon_min % 360, lon_max % 360
+        ds = ds.sel({lon_name: _slice_for_coord(ds[lon_name], qmin, qmax)})
+    depth_name = _coord_name(ds, ("depth", "deptht", "lev"))
+    if depth_name and depth_min is not None and depth_max is not None:
+        ds = ds.sel({depth_name: _slice_for_coord(ds[depth_name], depth_min, depth_max)})
+    ds, matched = _time_select(ds, requested_date)
+    return ds, matched
 
-# ---------------------------------------------------------------------------
-# Colormap helpers
-# ---------------------------------------------------------------------------
+def _downsample(da, lat_name: str | None, lon_name: str | None, max_pixels: int):
+    if not lat_name or not lon_name:
+        return da
+    try:
+        ny = int(da.sizes[lat_name])
+        nx = int(da.sizes[lon_name])
+        if ny <= max_pixels and nx <= max_pixels:
+            return da
+        factor = max(1, int(math.ceil(max(ny, nx) / max_pixels)))
+        return da.isel({lat_name: slice(None, None, factor),
+                        lon_name: slice(None, None, factor)})
+    except Exception:
+        return da
 
-# Supported matplotlib palettes exposed to the frontend.  We deliberately use
-# matplotlib.colormaps (Matplotlib 3.7+) and never cm.get_cmap(), which was
-# removed in newer Matplotlib releases.
-BUILTIN_COLORMAPS = {
-    "viridis": "viridis",
-    "plasma": "plasma",
-    "inferno": "inferno",
-    "magma": "magma",
-    "cividis": "cividis",
-    "turbo": "turbo",
-    "coolwarm": "coolwarm",
-    "RdYlBu_r": "RdYlBu_r",
-    "Spectral_r": "Spectral_r",
-    "Blues": "Blues",
-    "YlOrRd": "YlOrRd",
-    "BuPu": "BuPu",
-}
-
-CUSTOM_COLORMAPS = {
+# UI-compatible named palettes. These are intentionally kept here as
+# visualization definitions only: they never alter the scientific values.
+_NAMED_COLOR_STOPS = {
     "thermal": [
-        "#0a1929", "#1565c0", "#00acc1", "#66bb6a",
-        "#cddc39", "#ff9800", "#f44336",
+        (0.00, "#0a1929"), (0.17, "#1565c0"), (0.34, "#00acc1"),
+        (0.50, "#66bb6a"), (0.67, "#cddc39"), (0.83, "#ff9800"),
+        (1.00, "#f44336"),
+    ],
+    "viridis": [
+        (0.00, "#440154"), (0.25, "#3b528b"), (0.50, "#21918c"),
+        (0.75, "#5ec962"), (1.00, "#fde725"),
+    ],
+    "plasma": [
+        (0.00, "#0d0887"), (0.25, "#7e03a8"), (0.50, "#cc4778"),
+        (0.75, "#f89540"), (1.00, "#f0f921"),
+    ],
+    "coolwarm": [
+        (0.00, "#3b4cc0"), (0.20, "#7092d0"), (0.40, "#c9d7e9"),
+        (0.60, "#f0cdba"), (0.80, "#d67163"), (1.00, "#b40426"),
     ],
 }
 
-
-def _hex_to_rgb(value: str) -> Tuple[float, float, float]:
-    value = value.strip().lstrip("#")
-    if len(value) != 6 or not all(c in "0123456789abcdefABCDEF" for c in value):
+def _parse_hex_color(value: str) -> tuple[int, int, int]:
+    color = str(value).strip()
+    if color.startswith("#"):
+        color = color[1:]
+    if len(color) != 6 or not re.fullmatch(r"[0-9a-fA-F]{6}", color):
         raise ValueError(f"Invalid gradient color '{value}'")
-    return (
-        int(value[0:2], 16) / 255.0,
-        int(value[2:4], 16) / 255.0,
-        int(value[4:6], 16) / 255.0,
+    return tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
+
+def _parse_gradient(value: str):
+    """Parse the UI's gradient(#rrggbb@0.0,#rrggbb@1.0) format."""
+    if not isinstance(value, str) or not value.startswith("gradient(") or not value.endswith(")"):
+        return None
+    content = value[len("gradient("):-1].strip()
+    if not content:
+        raise ValueError("Custom gradient is empty")
+
+    stops = []
+    for part in content.split(","):
+        if "@" not in part:
+            raise ValueError(f"Invalid gradient stop '{part}'")
+        color_text, position_text = part.rsplit("@", 1)
+        try:
+            position = float(position_text)
+        except ValueError as exc:
+            raise ValueError(f"Invalid gradient position '{position_text}'") from exc
+        if not 0.0 <= position <= 1.0:
+            raise ValueError("Gradient stop positions must be between 0 and 1")
+        stops.append((position, _parse_hex_color(color_text)))
+
+    if len(stops) < 2:
+        raise ValueError("Custom gradient requires at least two stops")
+    stops.sort(key=lambda item: item[0])
+    if stops[0][0] != 0.0 or stops[-1][0] != 1.0:
+        raise ValueError("Custom gradient must have stops at positions 0 and 1")
+    if any(stops[i][0] == stops[i - 1][0] for i in range(1, len(stops))):
+        raise ValueError("Gradient stop positions must be unique")
+    return stops
+
+def _stops_to_rgba(norm: np.ndarray, stops):
+    """Vectorized linear RGB interpolation over arbitrary color stops."""
+    positions = np.asarray([p for p, _ in stops], dtype=np.float64)
+    colors = np.asarray([c for _, c in stops], dtype=np.float64)
+    flat = np.clip(norm, 0.0, 1.0).reshape(-1)
+
+    idx = np.searchsorted(positions, flat, side="right") - 1
+    idx = np.clip(idx, 0, len(positions) - 2)
+    left_p = positions[idx]
+    right_p = positions[idx + 1]
+    ratio = np.divide(
+        flat - left_p,
+        right_p - left_p,
+        out=np.zeros_like(flat),
+        where=(right_p - left_p) != 0,
     )
+    rgb = colors[idx] * (1.0 - ratio[:, None]) + colors[idx + 1] * ratio[:, None]
+    return rgb.reshape((*norm.shape, 3))
 
+def _resolve_color_stops(cmap_name: str | None, cfg: Dict[str, Any]):
+    requested = cmap_name or cfg.get("colormap", "viridis")
+    custom = _parse_gradient(requested)
+    if custom is not None:
+        return custom
 
-def _build_custom_colormap(colors: Sequence[str], name: str = "yara_custom"):
-    from matplotlib.colors import LinearSegmentedColormap
-    rgb = [_hex_to_rgb(c) for c in colors]
-    return LinearSegmentedColormap.from_list(name, rgb, N=256)
+    named = _NAMED_COLOR_STOPS.get(str(requested).lower())
+    if named is not None:
+        return [(position, _parse_hex_color(color)) for position, color in named]
 
+    # Preserve support for any standard matplotlib palette.
+    cmap = colormaps.get_cmap(requested)
+    sample = np.linspace(0.0, 1.0, 256)
+    rgba = cmap(sample)
+    return [(float(p), tuple((row[:3] * 255).astype(np.uint8))) for p, row in zip(sample, rgba)]
 
-def _get_colormap(name: str):
-    """Resolve a frontend colormap name or gradient(...) expression."""
-    requested = (name or "viridis").strip()
+def _render_array_to_png(values, cfg, *, vmin=None, vmax=None, cmap_name=None):
+    arr = np.asarray(values, dtype=np.float64).squeeze()
+    while arr.ndim > 2:
+        arr = arr[0]
+    if arr.ndim != 2:
+        raise RuntimeError(f"Expected a 2-D render slice, got shape {arr.shape}")
+    arr = np.flipud(arr)
+    valid = np.isfinite(arr)
+    lo = float(cfg["vmin"] if vmin is None else vmin)
+    hi = float(cfg["vmax"] if vmax is None else vmax)
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        raise ValueError("Color scale limits must be finite")
+    if not hi > lo:
+        hi = lo + 1.0
 
-    if requested.startswith("gradient(") and requested.endswith(")"):
-        content = requested[len("gradient("):-1]
-        colors = []
-        for item in content.split(","):
-            item = item.strip()
-            if "@" in item:
-                color, _position = item.rsplit("@", 1)
-            else:
-                color = item
-            colors.append(color.strip())
-        if len(colors) >= 2:
-            return _build_custom_colormap(colors)
+    # IMPORTANT: normalization and color mapping happen AFTER the real
+    # Copernicus numeric values have been retrieved. The source data is never
+    # changed by a palette/color-wheel operation.
+    norm = np.clip((arr - lo) / (hi - lo), 0.0, 1.0)
+    stops = _resolve_color_stops(cmap_name, cfg)
+    rgb = _stops_to_rgba(np.nan_to_num(norm, nan=0.0), stops)
+    rgba = np.empty((*arr.shape, 4), dtype=np.uint8)
+    rgba[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+    rgba[..., 3] = np.where(valid, 255, 0).astype(np.uint8)
 
-    if requested in CUSTOM_COLORMAPS:
-        return _build_custom_colormap(CUSTOM_COLORMAPS[requested], requested)
-
-    return matplotlib.colormaps.get(
-        BUILTIN_COLORMAPS.get(requested, "viridis"),
-        matplotlib.colormaps["viridis"],
-    )
-
-
-# ---------------------------------------------------------------------------
-# PNG rendering
-# ---------------------------------------------------------------------------
+    buf = io.BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 def render_to_png(
     variable: str,
@@ -401,192 +383,41 @@ def render_to_png(
     lat_max: float,
     lon_min: float,
     lon_max: float,
-    max_pixels: int,
-    colormap: str = "viridis",
+    max_pixels: int = 2048,
+    colormap: str | None = None,
     vmin: float | None = None,
     vmax: float | None = None,
-) -> Tuple[bytes, str, Dict[str, Any]]:
-
-    logger.info("[YARA OPeNDAP] Opening remote dataset: variable=%s  dataset=%s",
-                variable, cfg.get("dataset_id", "unknown"))
-
+):
+    # Open the requested spatial/time subset through the Toolbox.
     ds = open_remote_dataset(
-        variable,
-        cfg,
-        minimum_longitude=lon_min,
-        maximum_longitude=lon_max,
-        minimum_latitude=lat_min,
-        maximum_latitude=lat_max,
-        start_datetime=date,
-        end_datetime=date,
+        variable, cfg,
+        minimum_longitude=lon_min, maximum_longitude=lon_max,
+        minimum_latitude=lat_min, maximum_latitude=lat_max,
+        start_datetime=None if date == "latest" else date,
+        end_datetime=None if date == "latest" else date,
     )
-
-    logger.info("[YARA OPeNDAP] Selecting requested date: %s", date)
-    ds, matched = _select_date(ds, date)
-    logger.info("[YARA OPeNDAP] Matched date in dataset: %s", matched)
-
-    data = ds[variable]
-
-    logger.info("[YARA DATA] Selecting variable: %s", variable)
-    logger.info("[YARA DATA] Reading scientific variable: %s  dims=%s", variable, list(data.dims))
-
-    # If the variable has depth, default to surface.
-    if "depth" in data.dims:
-        data = data.isel(depth=0)
-        logger.info("[YARA DATA] Depth dimension detected — using surface level (depth=0)")
-
-    # Remove singleton dimensions.
-    data = data.squeeze(drop=True)
-
-    if "latitude" not in data.dims or "longitude" not in data.dims:
-        raise ValueError(
-            f"Variable '{variable}' cannot be rendered as a geographic frame"
-        )
-
-    # Extract coordinate arrays before any slicing
-    lat_values = data["latitude"].values
-    lon_values = data["longitude"].values
-
-    if lat_values.size == 0 or lon_values.size == 0:
-        raise ValueError(f"No spatial coordinates found for '{variable}' on {date}")
-
-    logger.info("[YARA OPeNDAP] Spatial extent: lat=[%.3f, %.3f]  lon=[%.3f, %.3f]  shape=[%d, %d]",
-                float(lat_values.min()), float(lat_values.max()),
-                float(lon_values.min()), float(lon_values.max()),
-                lat_values.size, lon_values.size)
-
-    # Derive dlat and dlon dynamically from actual coordinate arrays
-    if len(lat_values) > 1:
-        dlat = abs(float(lat_values[1] - lat_values[0]))
-    else:
-        dlat = float(cfg.get("spatial_resolution_deg", 0.08333333333333333))
-
-    if len(lon_values) > 1:
-        dlon = abs(float(lon_values[1] - lon_values[0]))
-    else:
-        dlon = float(cfg.get("spatial_resolution_deg", 0.08333333333333333))
-
-    # Calculate exact outer cell-edge bounds
-    edge_lat_min = float(np.min(lat_values)) - dlat / 2.0
-    edge_lat_max = float(np.max(lat_values)) + dlat / 2.0
-    edge_lon_min = float(np.min(lon_values)) - dlon / 2.0
-    edge_lon_max = float(np.max(lon_values)) + dlon / 2.0
-
-    # Downsample only if necessary.
-    lat_size = data.sizes["latitude"]
-    lon_size = data.sizes["longitude"]
-
-    if lat_size * lon_size > max_pixels * max_pixels:
-
-        lat_stride = max(
-            1,
-            int(np.ceil(lat_size / max_pixels)),
-        )
-
-        lon_stride = max(
-            1,
-            int(np.ceil(lon_size / max_pixels)),
-        )
-
-        logger.info("[YARA OPeNDAP] Downsampling grid: stride=[%d, %d]  original=[%d, %d]",
-                    lat_stride, lon_stride, lat_size, lon_size)
-
-        data = data.isel(
-            latitude=slice(None, None, lat_stride),
-            longitude=slice(None, None, lon_stride),
-        )
-
-    logger.info("[YARA OPeNDAP] Loading data subset from remote OPeNDAP...")
-
-    # Load ONLY this requested subset.
-    arr = data.load().values.astype(np.float32)
-
-    arr = np.squeeze(arr)
-
-    logger.info("[YARA OPeNDAP] Scientific data loaded — shape=%s", arr.shape)
-
-    # Replace invalid values.
-    finite = np.isfinite(arr)
-
-    if not finite.any():
-        raise ValueError(
-            f"No valid data available for '{variable}' on {date}"
-        )
-
-    # Value range comes from the frontend when supplied; otherwise use
-    # the scientific default registered for this variable.
-    vmin_val = float(cfg["vmin"] if vmin is None else vmin)
-    vmax_val = float(cfg["vmax"] if vmax is None else vmax)
-
-    if not np.isfinite(vmin_val) or not np.isfinite(vmax_val):
-        raise ValueError("Color scale limits must be finite numbers.")
-    if vmin_val >= vmax_val:
-        raise ValueError("Color scale minimum must be smaller than maximum.")
-
-    logger.info("[YARA RASTER] Applying colormap: %s  range=[%.3f, %.3f]", colormap, vmin_val, vmax_val)
-
-    # Normalize values to the requested display range.
-    normalized = (arr - vmin_val) / (vmax_val - vmin_val)
-    normalized = np.clip(normalized, 0.0, 1.0)
-
-    # Resolve the same palette selected in the frontend.
-    cmap = _get_colormap(colormap)
-
-    # Map normalized values through the selected colormap.
-    colored = cmap(normalized)
-    rgba = (colored * 255).astype(np.uint8)
-
-    # Set alpha to 0 for non-finite values (NaN / fill values)
-    rgba[..., 3] = np.where(
-        finite,
-        255,
-        0,
-    ).astype(np.uint8)
-
-    # Flip latitude if latitude increases from South to North so row 0 is North (top of image)
     try:
-        if len(lat_values) > 1 and lat_values[0] < lat_values[-1]:
-            rgba = np.flipud(rgba)
-    except Exception:
-        pass
-
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        raise RuntimeError(
-            "Pillow is required for PNG rendering"
-        ) from exc
-
-    logger.info("[YARA RASTER] Encoding PNG: size=%dx%d", rgba.shape[1], rgba.shape[0])
-
-    image = Image.fromarray(rgba, mode="RGBA")
-
-    buffer = io.BytesIO()
-
-    image.save(
-        buffer,
-        format="PNG",
-        optimize=True,
-    )
-
-    bounds_dict = {
-        "west": edge_lon_min,
-        "south": edge_lat_min,
-        "east": edge_lon_max,
-        "north": edge_lat_max,
-        "width": int(rgba.shape[1]),
-        "height": int(rgba.shape[0]),
-    }
-
-    logger.info("[YARA RASTER] Raster generation complete — %d bytes", len(buffer.getvalue()))
-
-    return buffer.getvalue(), matched or date, bounds_dict
-
-
-
-# ---------------------------------------------------------------------------
-# Point query
-# ---------------------------------------------------------------------------
+        ds, matched = _time_select(ds, date)
+        da = ds[variable]
+        lat_name = _coord_name(ds, ("latitude", "lat"))
+        lon_name = _coord_name(ds, ("longitude", "lon"))
+        da = _downsample(da, lat_name, lon_name, max_pixels)
+        # For depth-dependent fields, surface rendering uses the shallowest
+        # available depth unless the caller supplies a depth-specific endpoint.
+        depth_name = _coord_name(ds, ("depth", "deptht", "lev"))
+        if depth_name and depth_name in da.dims:
+            da = da.isel({depth_name: 0})
+        values = da.load().values
+        png = _render_array_to_png(values, cfg, vmin=vmin, vmax=vmax,
+                                   cmap_name=colormap)
+        return png, matched or date, {
+            "west": float(lon_min), "south": float(lat_min),
+            "east": float(lon_max), "north": float(lat_max),
+            "width": int(np.asarray(values).shape[-1]),
+            "height": int(np.asarray(values).shape[-2]),
+        }
+    finally:
+        _safe_close(ds)
 
 def query_point(
     variable: str,
@@ -595,126 +426,62 @@ def query_point(
     lon: float,
     lat: float,
 ):
-    """
-    Query the value of a variable at a specific geographic point.
-
-    Returns the observation along with:
-    - requested vs actual matched coordinates
-    - 1° × 1° display grid box (metadata/geometry, NOT resampling)
-    - dataset and source information
-
-    The 1° grid is the geographic grid cell containing the clicked point,
-    computed as [floor(coord), floor(coord)+1].  The actual dataset remains
-    at its native resolution (~0.083°).  This distinction is scientifically
-    important: the grid is display geometry, not an aggregation operation.
-    """
-
+    # Small remote subset around the clicked location.
+    lon = _normalise_lon(lon)
     ds = open_remote_dataset(
-        variable,
-        cfg,
-        minimum_longitude=lon - 0.1,
-        maximum_longitude=lon + 0.1,
-        minimum_latitude=lat - 0.1,
-        maximum_latitude=lat + 0.1,
-        start_datetime=date,
-        end_datetime=date,
+        variable, cfg,
+        minimum_longitude=max(-180.0, lon - 0.1),
+        maximum_longitude=min(180.0, lon + 0.1),
+        minimum_latitude=max(-90.0, lat - 0.1),
+        maximum_latitude=min(90.0, lat + 0.1),
+        start_datetime=None if date == "latest" else date,
+        end_datetime=None if date == "latest" else date,
     )
-
-    ds, matched = _select_date(ds, date)
-
-    data = ds[variable]
-
-    # --- Select nearest grid cell and extract matched coordinates ---
-    matched_lon: float | None = None
-    matched_lat: float | None = None
-
-    if "longitude" in data.dims:
-        data = data.sel(longitude=lon, method="nearest")
-        try:
-            matched_lon = float(data["longitude"].values)
-        except Exception:
-            pass
-
-    if "latitude" in data.dims:
-        data = data.sel(latitude=lat, method="nearest")
-        try:
-            matched_lat = float(data["latitude"].values)
-        except Exception:
-            pass
-
-    # --- 1° × 1° display grid (NOT resampling) ---
-    grid_lat_min = math.floor(lat)
-    grid_lat_max = grid_lat_min + 1
-    grid_lon_min = math.floor(lon)
-    grid_lon_max = grid_lon_min + 1
-
-    result: Dict[str, Any] = {
-        "variable": variable,
-        "display_name": cfg["display_name"],
-        "dataset_id": cfg["dataset_id"],
-        "requested_date": date,
-        "matched_date": matched or date,
-        # Requested coordinates (what the user clicked)
-        "requested_lat": lat,
-        "requested_lon": lon,
-        # Actual dataset matched coordinates (native resolution)
-        "matched_lat": matched_lat,
-        "matched_lon": matched_lon,
-        # Legacy fields kept for backward compatibility
-        "longitude": lon,
-        "latitude": lat,
-        "units": cfg["units_display"],
-        "source": cfg.get("source", "Copernicus Marine Service"),
-        "provider": cfg.get("provider", "Copernicus"),
-        # 1° × 1° display grid box (geometry only, NOT data resampling)
-        "grid": {
-            "lat_min": grid_lat_min,
-            "lat_max": grid_lat_max,
-            "lon_min": grid_lon_min,
-            "lon_max": grid_lon_max,
-            "lat_resolution": 1.0,
-            "lon_resolution": 1.0,
-        },
-    }
-
-    # Depth-dependent variables return all depth values.
-    if "depth" in data.dims:
-
-        values = data.load().values
-
-        depth_values = ds["depth"].values
-
-        result["depth_values"] = [
-            float(v) for v in depth_values
-        ]
-
-        result["values"] = [
-            None if not np.isfinite(v) else float(v)
-            for v in values
-        ]
-
-        # Use the surface (first depth) value as the primary value
-        if len(values) > 0:
-            v = float(values[0])
-            result["value"] = None if not np.isfinite(v) else v
+    try:
+        ds, matched = _time_select(ds, date)
+        da = ds[variable]
+        lat_name = _coord_name(ds, ("latitude", "lat"))
+        lon_name = _coord_name(ds, ("longitude", "lon"))
+        time_name = _coord_name(ds, ("time", "datetime", "date"))
+        if lat_name:
+            da = da.sel({lat_name: lat}, method="nearest")
+        if lon_name:
+            qlon = lon
+            vals = np.asarray(ds[lon_name].values)
+            if vals.size and np.nanmax(vals) > 180:
+                qlon = lon % 360
+            da = da.sel({lon_name: qlon}, method="nearest")
+        result = {
+            "variable": variable,
+            "variable_name": cfg["display_name"],
+            "units": cfg["units_display"],
+            "requested_lat": float(lat),
+            "requested_lon": float(lon),
+            "dataset_id": cfg["dataset_id"],
+            "provider": cfg["provider"],
+            "source": cfg["source"],
+            "date_requested": date,
+            "date_matched": matched or date,
+        }
+        if lat_name and lat_name in da.coords:
+            result["matched_lat"] = float(np.asarray(da[lat_name].values).squeeze())
+        if lon_name and lon_name in da.coords:
+            mlon = float(np.asarray(da[lon_name].values).squeeze())
+            result["matched_lon"] = mlon - 360 if mlon > 180 else mlon
+        depth_name = _coord_name(ds, ("depth", "deptht", "lev"))
+        if depth_name and depth_name in da.dims:
+            vals = np.asarray(da.load().values).squeeze()
+            result["depth_values"] = [float(x) for x in np.asarray(ds[depth_name].values).flat]
+            result["values"] = [
+                None if not np.isfinite(x) else float(x)
+                for x in np.asarray(vals).flat
+            ]
         else:
-            result["value"] = None
-
-    else:
-
-        value = data.load().values
-
-        value = np.asarray(value).squeeze()
-
-        if value.size == 0:
-            result["value"] = None
-        else:
-            value = float(value)
-
-            result["value"] = (
-                None
-                if not np.isfinite(value)
-                else value
-            )
-
-    return result
+            val = np.asarray(da.load().values).squeeze()
+            x = val.item() if np.asarray(val).size else np.nan
+            result["value"] = None if not np.isfinite(x) else float(x)
+        if time_name and time_name in da.coords:
+            result["date"] = str(np.asarray(da[time_name].values).squeeze())
+        return result
+    finally:
+        _safe_close(ds)

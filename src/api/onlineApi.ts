@@ -26,7 +26,7 @@ export async function fetchOnlineFrame(datasetId: string, variable: string, time
   if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `Frame request failed (${response.status})`); }
   const numberHeader = (name: string, fallback: number) => Number(response.headers.get(name) ?? fallback);
   const blob = await response.blob();
-  const matchedTime = response.headers.get('X-Time-Matched') || time;
+  const matchedTime = response.headers.get('X-Date-Matched') || response.headers.get('X-Time-Matched') || time;
   return {
     blobUrl: URL.createObjectURL(blob), status: response.status, blobSize: blob.size, blobType: blob.type, matchedTime, matchedDate: matchedTime,
     datasetId: response.headers.get('X-Dataset-Id') || datasetId, variable: response.headers.get('X-Variable') || variable,
