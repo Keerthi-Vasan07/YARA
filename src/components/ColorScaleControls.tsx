@@ -83,6 +83,13 @@ interface ColorScaleControlsProps {
   onThresholdEnabledChange?: (enabled: boolean) => void;
   onThresholdMinChange?: (value: number | null) => void;
   onThresholdMaxChange?: (value: number | null) => void;
+
+  /**
+   * Called immediately when the Apply Color Scale button is clicked,
+   * before any state setters fire. Use this to show a loading indicator
+   * without waiting for the React state update cycle.
+   */
+  onApply?: () => void;
 }
 
 // ============================================================
@@ -1511,6 +1518,8 @@ export function ColorScaleControls({
   onThresholdEnabledChange,
   onThresholdMinChange,
   onThresholdMaxChange,
+
+  onApply,
 }: ColorScaleControlsProps) {
   // ── Draft State for Color Scale ──────────────────────────────────────────
   const [draftMin, setDraftMin] = useState(minTemp);
@@ -1533,6 +1542,10 @@ export function ColorScaleControls({
   useEffect(() => { setDraftThresholdMax(thresholdMax); }, [thresholdMax]);
 
   const handleColorApply = () => {
+    // Fire immediately so the parent can show a loading state before
+    // React processes the individual state setter calls below.
+    onApply?.();
+
     onMinTempChange(draftMin);
     onMaxTempChange(draftMax);
     onColormapChange(draftColormap);

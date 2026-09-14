@@ -1,0 +1,30 @@
+YARA FINAL READY — ISOLATED ARGO/GLIDER INTEGRATION
+
+BASE:
+src/ and server/ are taken from the current user-uploaded archives.
+argo_glider/backend/ contains the standalone Argo/Glider readers.
+
+ADDED:
+- argo_glider/backend/routes.py
+- src/api/argoGliderApi.ts
+- src/components/ArgoGliderPanel.tsx
+- src/components/ArgoGliderOverlay.tsx
+
+WIRED:
+- server/main.py
+- src/components/CesiumViewer.tsx
+- src/components/Layout.tsx
+- src/components/Sidebar.tsx
+
+IMPORTANT:
+1. Commit/backup your current YARA project before copying.
+2. Extract this ZIP to a temporary folder.
+3. Copy the ZIP contents into the YARA root.
+4. Do not git reset/clean/restore.
+5. Start backend:
+   python -m uvicorn server.main:app --reload --port 8000
+6. Start frontend:
+   npm run dev
+
+Argo/Glider remains an independent overlay and does not replace the Copernicus
+11-variable ocean/OPeNDAP pipeline.

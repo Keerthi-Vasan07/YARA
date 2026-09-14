@@ -169,10 +169,21 @@ interface CesiumViewerProps {
 
   onFrameLoadingChange?: (
     loading: boolean,
-    error?: string | null
+    error?: string | null,
+    stage?: 'connecting' | 'receiving' | 'generating' | 'loading' | 'updating'
   ) => void;
 
-  // Argo / Glider (isolated module)
+  onScreenPositionChange?: (pos: { x: number; y: number } | null) => void;
+
+  // Argo / Glider overlay (independent CustomDataSource entities added by
+  // ArgoGliderOverlay). Picking is handled here so it can take priority
+  // over the existing ocean-grid click without altering that click's
+  // own logic below.
+  onArgoGliderPick?: (
+    kind: 'argo' | 'glider',
+    properties: Record<string, unknown>
+  ) => void;
+
 }
 
 // ============================================================================
@@ -554,7 +565,10 @@ export const CesiumViewer = forwardRef<
 
       onFrameLoadingChange,
 
-      // Argo / Glider
+      onArgoGliderPick,
+
+      onScreenPositionChange,
+
     },
     ref
   ) {
@@ -626,10 +640,6 @@ export const CesiumViewer = forwardRef<
     const isDrawingRef =
       useRef(false);
 
-    // Argo/Glider entity refs (isolated from imagery layers)
-      useRef<Cesium.Entity[]>([]);
-
-      useRef<Cesium.Entity[]>([]);
 
     // Callback refs
     const onMapClickRef =
@@ -637,6 +647,9 @@ export const CesiumViewer = forwardRef<
 
     const onCameraChangeRef =
       useRef(onCameraChange);
+
+    const onArgoGliderPickRef =
+      useRef(onArgoGliderPick);
 
     // ========================================================================
     // STATE
@@ -672,6 +685,10 @@ export const CesiumViewer = forwardRef<
     useEffect(() => {
       onMapClickRef.current = onMapClick;
     }, [onMapClick]);
+
+    useEffect(() => {
+      onArgoGliderPickRef.current = onArgoGliderPick;
+    }, [onArgoGliderPick]);
 
     useEffect(() => {
       onCameraChangeRef.current =
@@ -1364,6 +1381,73 @@ export const CesiumViewer = forwardRef<
     ]);
 
     // ========================================================================
+    // DYNAMIC SCREEN POSITION TRACKING
+    // Continuously projects the selected 3D point into screen coordinates.
+    // Automatically hides connection line if point is occluded by Earth.
+    // ========================================================================
+
+    useEffect(() => {
+      const viewer = viewerRef.current;
+      if (!viewer || viewer.isDestroyed() || !viewerInitialized) return;
+
+      const targetPos = clickedPosition ?? internalClickedPosition;
+      if (!targetPos) {
+        onScreenPositionChange?.(null);
+        return;
+      }
+
+      const updateScreenPos = () => {
+        if (!viewerRef.current || viewerRef.current.isDestroyed()) return;
+
+        const cartesian = Cesium.Cartesian3.fromDegrees(
+          targetPos.lon,
+          targetPos.lat,
+          100
+        );
+
+        const cameraPos = viewer.camera.position;
+        const surfaceNormal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(
+          cartesian,
+          new Cesium.Cartesian3()
+        );
+        const toCamera = Cesium.Cartesian3.subtract(
+          cameraPos,
+          cartesian,
+          new Cesium.Cartesian3()
+        );
+        const isVisible = Cesium.Cartesian3.dot(surfaceNormal, toCamera) > 0;
+
+        if (!isVisible) {
+          onScreenPositionChange?.(null);
+          return;
+        }
+
+        const windowPos = Cesium.SceneTransforms.worldToWindowCoordinates(
+          viewer.scene,
+          cartesian
+        );
+
+        if (windowPos) {
+          onScreenPositionChange?.({ x: windowPos.x, y: windowPos.y });
+        } else {
+          onScreenPositionChange?.(null);
+        }
+      };
+
+      const removeListener = viewer.scene.postRender.addEventListener(updateScreenPos);
+      updateScreenPos();
+
+      return () => {
+        removeListener();
+      };
+    }, [
+      clickedPosition,
+      internalClickedPosition,
+      viewerInitialized,
+      onScreenPositionChange,
+    ]);
+
+    // ========================================================================
     // INITIALIZE CESIUM
     // ========================================================================
 
@@ -1577,11 +1661,48 @@ export const CesiumViewer = forwardRef<
             return;
           }
 
-          const cartesian =
-            viewer.camera.pickEllipsoid(
+          // ------------------------------------------------------------------
+          // ARGO / GLIDER ENTITY PICK
+          //
+          // Checked first so a click landing on an Argo/Glider marker is
+          // routed to the overlay callback instead of the existing
+          // ocean-grid point query below. Any other click (including one
+          // that misses every entity) falls straight through unchanged.
+          // ------------------------------------------------------------------
+          const pickedObject = viewer.scene.pick(click.position);
+          const pickedEntity =
+            pickedObject && pickedObject.id instanceof Cesium.Entity
+              ? (pickedObject.id as Cesium.Entity)
+              : null;
+
+          if (pickedEntity && pickedEntity.properties) {
+            const entityId = String(pickedEntity.id ?? '');
+            const kind = entityId.startsWith('argo-')
+              ? 'argo'
+              : entityId.startsWith('glider-')
+              ? 'glider'
+              : null;
+
+            if (kind) {
+              const props =
+                pickedEntity.properties.getValue(
+                  Cesium.JulianDate.now()
+                ) ?? {};
+              onArgoGliderPickRef.current?.(
+                kind,
+                props as Record<string, unknown>
+              );
+              return;
+            }
+          }
+
+          let cartesian: Cesium.Cartesian3 | undefined = viewer.scene.pickPosition(click.position);
+          if (!cartesian || !Cesium.defined(cartesian)) {
+            cartesian = viewer.camera.pickEllipsoid(
               click.position,
               viewer.scene.globe.ellipsoid
-            );
+            ) || undefined;
+          }
 
           if (!cartesian) {
             return;
@@ -1897,30 +2018,21 @@ export const CesiumViewer = forwardRef<
               requestKey;
 
             console.log(
-              '[YARA APPLY] START UNIQUE ONLINE REQUEST',
+              '[YARA FRAME] request-start',
               {
                 requestKey,
-
-                variable:
-                  activeOnlineVar,
-
-                date:
-                  activeOnlineDate,
-
-                colormap:
-                  activeColormap,
-
-                vmin:
-                  colorScaleMin,
-
-                vmax:
-                  colorScaleMax,
+                variable: activeOnlineVar,
+                date: activeOnlineDate,
+                colormap: activeColormap,
+                vmin: colorScaleMin,
+                vmax: colorScaleMax,
               }
             );
 
             onFrameLoadingChange?.(
               true,
-              null
+              null,
+              'connecting'
             );
 
             let generatedBlobUrl:
@@ -1954,6 +2066,26 @@ export const CesiumViewer = forwardRef<
               generatedBlobUrl =
                 frameRes.blobUrl;
 
+              console.log(
+                '[YARA FRAME] response-received',
+                {
+                  status: frameRes.status,
+                  blobSize: frameRes.blobSize,
+                  matchedDate: frameRes.matchedDate,
+                }
+              );
+
+              console.log(
+                '[YARA FRAME] blob-created',
+                frameRes.blobUrl
+              );
+
+              onFrameLoadingChange?.(
+                true,
+                null,
+                'receiving'
+              );
+
               // ==============================================================
               // REQUEST MAY HAVE BEEN ABORTED
               // ==============================================================
@@ -1975,6 +2107,10 @@ export const CesiumViewer = forwardRef<
 
                   generatedBlobUrl =
                     null;
+                }
+
+                if (inFlightOnlineRequestRef.current === requestKey) {
+                  onFrameLoadingChange?.(false, null);
                 }
 
                 return;
@@ -2122,6 +2258,12 @@ export const CesiumViewer = forwardRef<
               // CREATE CESIUM PROVIDER
               // ==============================================================
 
+              onFrameLoadingChange?.(
+                true,
+                null,
+                'generating'
+              );
+
               const provider =
                 await Cesium.SingleTileImageryProvider.fromUrl(
                   frameRes.blobUrl,
@@ -2129,6 +2271,21 @@ export const CesiumViewer = forwardRef<
                     rectangle,
                   }
                 );
+
+              onFrameLoadingChange?.(
+                true,
+                null,
+                'loading'
+              );
+
+              console.log(
+                '[YARA FRAME] provider-created',
+                frameRes.bounds
+              );
+
+              if (viewerRef.current && !viewerRef.current.isDestroyed()) {
+                viewerRef.current.scene.requestRender();
+              }
 
               // ==============================================================
               // CHECK AGAIN AFTER PROVIDER CREATION
@@ -2231,6 +2388,12 @@ export const CesiumViewer = forwardRef<
                 `[YARA CESIUM DEBUG] IMAGERY LAYERS COUNT BEFORE ADD: ${lengthBefore}`
               );
 
+              onFrameLoadingChange?.(
+                true,
+                null,
+                'updating'
+              );
+
               const newLayer =
                 viewer.imageryLayers.addImageryProvider(
                   provider
@@ -2258,22 +2421,17 @@ export const CesiumViewer = forwardRef<
                 );
 
               console.log(
-                '[YARA CESIUM DEBUG] NEW IMAGERY LAYER ADDED',
+                '[YARA FRAME] layer-added',
                 {
                   lengthBefore,
-
                   lengthAfter,
-
-                  layerIndex:
-                    newIndex,
-
-                  show:
-                    newLayer.show,
-
-                  alpha:
-                    newLayer.alpha,
+                  layerIndex: newIndex,
+                  show: newLayer.show,
+                  alpha: newLayer.alpha,
                 }
               );
+
+              viewer.scene.requestRender();
 
               // ==============================================================
               // PUT SCIENTIFIC LAYER ABOVE BASEMAP
@@ -2290,6 +2448,8 @@ export const CesiumViewer = forwardRef<
                   baseLayerRef.current
                 );
               }
+
+              viewer.scene.requestRender();
 
               // ==============================================================
               // ATOMIC REPLACEMENT
@@ -2327,6 +2487,8 @@ export const CesiumViewer = forwardRef<
                 newLayer
               );
 
+              viewer.scene.requestRender();
+
               // ==============================================================
               // BLOB URL MANAGEMENT
               // ==============================================================
@@ -2351,7 +2513,7 @@ export const CesiumViewer = forwardRef<
               }
 
               // ==============================================================
-              // MARK AS SUCCESSFULLY RENDERED
+              // MARK AS SUCCESSFULLY RENDERED ONLY AFTER LAYER ADDED
               // ==============================================================
 
               lastSstRequestRef.current =
@@ -2363,7 +2525,12 @@ export const CesiumViewer = forwardRef<
               );
 
               console.log(
-                `[YARA APPLY] SCIENTIFIC VISUALIZATION SUCCESS: ${requestKey}`
+                '[YARA FRAME] render-requested'
+              );
+
+              console.log(
+                '[YARA FRAME] complete',
+                requestKey
               );
 
               // ==============================================================
@@ -2444,8 +2611,13 @@ export const CesiumViewer = forwardRef<
                 )
               ) {
                 console.log(
-                  `[YARA Online] Request aborted: ${requestKey}`
+                  '[YARA FRAME] request-aborted',
+                  requestKey
                 );
+
+                if (inFlightOnlineRequestRef.current === requestKey) {
+                  onFrameLoadingChange?.(false, null);
+                }
 
                 return;
               }
@@ -2483,13 +2655,19 @@ export const CesiumViewer = forwardRef<
               // ------------------------------------------------------------
 
               console.error(
-                `[YARA Online] Failed to load ${activeOnlineVar} for ${activeOnlineDate}:`,
+                '[YARA FRAME] error',
                 err
               );
 
+              lastSstRequestRef.current = '';
+
+              if (viewerRef.current && !viewerRef.current.isDestroyed()) {
+                viewerRef.current.scene.requestRender();
+              }
+
               onFrameLoadingChange?.(
                 false,
-                `Scientific data processing failed: ${errMsg}`
+                `Ocean visualization could not be rendered: ${errMsg}`
               );
             } finally {
               // ------------------------------------------------------------
@@ -2871,6 +3049,9 @@ export const CesiumViewer = forwardRef<
     const prevLocalKeyRef =
       useRef<string>('');
 
+    const prevOnlineKeyRef =
+      useRef<string>('');
+
     useEffect(() => {
       const viewer =
         viewerRef.current;
@@ -2889,6 +3070,7 @@ export const CesiumViewer = forwardRef<
       if (
         activeMode === 'local'
       ) {
+        prevOnlineKeyRef.current = '';
         const localKey =
           `${activeDataset?.id}:${localVariable}:${localTimeIndex}:${colorScaleMin}:${colorScaleMax}:${colormap}:${JSON.stringify(localAnalysis)}`;
 
@@ -2921,14 +3103,18 @@ export const CesiumViewer = forwardRef<
       if (
         activeMode === 'online'
       ) {
-        console.log(
-          `[YARA APPLY] Layer effect triggered: variable=${onlineVariable} date=${onlineDate}`
-        );
+        const onlineKey = `${onlineDatasetId}:${onlineVariable}:${onlineDate}:${colormap}:${colorScaleMin}:${colorScaleMax}`;
+        if (prevOnlineKeyRef.current !== onlineKey) {
+          prevOnlineKeyRef.current = onlineKey;
+          console.log(
+            `[YARA APPLY] Layer effect triggered: variable=${onlineVariable} date=${onlineDate}`
+          );
 
-        updateDataLayers(
-          selectedDate,
-          visibleLayers
-        );
+          updateDataLayers(
+            selectedDate,
+            visibleLayers
+          );
+        }
 
         // NO ABORT CLEANUP HERE.
         return;

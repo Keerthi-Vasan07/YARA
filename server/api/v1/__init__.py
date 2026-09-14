@@ -22,6 +22,12 @@ router = APIRouter()
 # Health endpoints (no prefix - /, /health, /ready)
 router.include_router(health_router)
 
+# Generic Online / OPeNDAP endpoints (/api/online/*) - MUST precede wildcard /{variable}/* routes
+router.include_router(online_router)
+
+# Local dataset endpoints (/api/local-dataset/*)
+router.include_router(local_dataset_router)
+
 # Time range endpoints (/api/time-range/*)
 router.include_router(time_range_router)
 
@@ -45,9 +51,3 @@ router.include_router(zarr_router)
 
 # OPeNDAP SST endpoints (legacy — kept for backward compatibility)
 router.include_router(opendap_sst_router)
-
-# Local dataset endpoints (/api/local-dataset/*)
-router.include_router(local_dataset_router)
-
-# Generic Online / OPeNDAP endpoints (/api/online/*)
-router.include_router(online_router)

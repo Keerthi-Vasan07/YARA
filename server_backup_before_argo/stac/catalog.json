@@ -1,0 +1,19 @@
+{
+  "type": "Catalog",
+  "stac_version": "1.0.0",
+  "id": "ocean-ecv",
+  "title": "Ocean Essential Climate Variables",
+  "description": "STAC catalog for Copernicus Marine ECV data. Includes daily COG products and ARCO Zarr analytics stores with climatology, trends, and percentiles.",
+  "links": [
+    {
+      "rel": "self",
+      "href": "./catalog.json",
+      "type": "application/json"
+    },
+    {
+      "rel": "root",
+      "href": "./catalog.json",
+      "type": "application/json"
+    }
+  ]
+}

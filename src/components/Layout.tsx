@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Box } from '@mui/material';
-import * as Cesium from 'cesium';
 
 import { Header } from './Header';
 import { Footer } from './Footer';
@@ -87,6 +86,17 @@ import {
   fetchOnlinePoint,
   OnlinePointQuery,
 } from '../api/onlineApi';
+
+import {
+  ArgoFloat,
+  GliderPlatform,
+} from '../api/argoGliderApi';
+import { ArgoGliderPanel } from './ArgoGliderPanel';
+import { ArgoGliderOverlay } from './ArgoGliderOverlay';
+import {
+  ArgoGliderObservationPanel,
+  ArgoGliderObservation,
+} from './ArgoGliderObservationPanel';
 
 import {
   ScientificProcessingToast,
@@ -220,11 +230,67 @@ export function Layout() {
   const [onlinePointData, setOnlinePointData] =
     useState<OnlinePointQuery | null>(null);
 
+  /* ------------------------------------------------------------------ */
+  /* ARGO / GLIDER — ISOLATED OVERLAY                                   */
+  /* ------------------------------------------------------------------ */
+
+  const [argoFloats, setArgoFloats] =
+    useState<ArgoFloat[]>([]);
+
+  const [gliderTrajectories, setGliderTrajectories] =
+    useState<GliderPlatform[]>([]);
+
+  const [argoVisible, setArgoVisible] =
+    useState(false);
+
+  const [gliderVisible, setGliderVisible] =
+    useState(false);
+
+  const [argoGliderPanelOpen, setArgoGliderPanelOpen] =
+    useState(false);
+
+  const [selectedArgo, setSelectedArgo] =
+    useState<ArgoGliderObservation | null>(null);
+
+  const [selectedGlider, setSelectedGlider] =
+    useState<ArgoGliderObservation | null>(null);
+
+  const handleArgoGliderPick = useCallback(
+    (kind: 'argo' | 'glider', properties: Record<string, unknown>) => {
+      if (kind === 'argo') {
+        setSelectedGlider(null);
+        setSelectedArgo({ kind, properties });
+      } else {
+        setSelectedArgo(null);
+        setSelectedGlider({ kind, properties });
+      }
+    },
+    []
+  );
+
+  const handleClearArgo = useCallback(() => {
+    setArgoFloats([]);
+    setArgoVisible(false);
+    setSelectedArgo(null);
+  }, []);
+
+  const handleClearGlider = useCallback(() => {
+    setGliderTrajectories([]);
+    setGliderVisible(false);
+    setSelectedGlider(null);
+  }, []);
+
   const [onlinePointLoading, setOnlinePointLoading] =
     useState(false);
 
+  const [onlinePointError, setOnlinePointError] =
+    useState<string | null>(null);
+
   const [onlineScreenPosition, setOnlineScreenPosition] =
     useState<{ x: number; y: number } | null>(null);
+
+  const pointQueryIdRef = useRef(0);
+  const pointAbortControllerRef = useRef<AbortController | null>(null);
 
   const [processingState, setProcessingState] =
     useState<ProcessingState>({
@@ -249,8 +315,9 @@ export function Layout() {
     setProcessingState({
       isProcessing: true,
       status: 'fetching',
-      title: 'Fetching scientific data…',
-      message: `Requesting ${variable} for ${date} from Copernicus Marine Service OPeNDAP…`,
+      title: 'Connecting to Copernicus Marine…',
+      message: `Opening remote OPeNDAP dataset stream for ${variable}…`,
+      stage: 'connecting',
     });
 
     // Commit the applied state.
@@ -264,12 +331,36 @@ export function Layout() {
     }));
   }, []);
 
-  const handleFrameLoadingChange = useCallback((loading: boolean, error?: string | null) => {
+  const handleFrameLoadingChange = useCallback((
+    loading: boolean,
+    error?: string | null,
+    stage?: 'connecting' | 'receiving' | 'generating' | 'loading' | 'updating'
+  ) => {
     if (loading) {
+      let stageTitle = 'Connecting to Copernicus Marine…';
+      let stageMsg = 'Opening remote OPeNDAP dataset stream…';
+
+      if (stage === 'receiving') {
+        stageTitle = 'Receiving ocean data…';
+        stageMsg = 'Reading raw numerical array from Copernicus…';
+      } else if (stage === 'generating') {
+        stageTitle = 'Generating visualization…';
+        stageMsg = 'Colorizing scientific values and encoding PNG raster…';
+      } else if (stage === 'loading') {
+        stageTitle = 'Loading ocean layer…';
+        stageMsg = 'Creating Cesium imagery provider and preparing WebGL raster map…';
+      } else if (stage === 'updating') {
+        stageTitle = 'Updating globe…';
+        stageMsg = 'Swapping imagery layer on Cesium 3D canvas…';
+      }
+
       setProcessingState(prev => ({
         ...prev,
         isProcessing: true,
-        status: prev.status === 'idle' ? 'fetching' : prev.status,
+        status: 'fetching',
+        title: stageTitle,
+        message: stageMsg,
+        stage: stage || 'connecting',
       }));
     } else if (error) {
       setProcessingState({
@@ -280,7 +371,7 @@ export function Layout() {
       });
       setTimeout(() => {
         setProcessingState({ isProcessing: false, status: 'idle' });
-      }, 4000);
+      }, 5000);
     } else {
       setProcessingState({
         isProcessing: true,
@@ -602,31 +693,21 @@ export function Layout() {
 
 
   /*
-   * Backend registry is authoritative.
-   * If metadata is available, it has priority.
+   * IMPORTANT: Use the committed state values directly.
+   *
+   * handleOnlineStateChange already resets colormap/min/max to the
+   * variable's registry defaults whenever the variable changes.
+   *
+   * When the user clicks "Apply Color Scale", these reflect their
+   * explicit choice and must flow through to the backend fetch.
+   *
+   * Do NOT override with onlineConfig.colormap / vmin / vmax here —
+   * that would block the Apply Color Scale button from having any effect.
    */
 
-  const effectiveMin =
-    activeMode === 'online' &&
-    onlineState.metadata
-      ? (onlineConfig?.vmin ?? colorScaleMin)
-      : colorScaleMin;
-
-
-  const effectiveMax =
-    activeMode === 'online' &&
-    onlineState.metadata
-      ? (onlineConfig?.vmax ?? colorScaleMax)
-      : colorScaleMax;
-
-
-  const effectiveColormap =
-    activeMode === 'online'
-      ? (
-          onlineConfig?.colormap ||
-          colormap
-        )
-      : colormap;
+  const effectiveMin = colorScaleMin;
+  const effectiveMax = colorScaleMax;
+  const effectiveColormap = colormap;
 
 
   const effectiveUnits =
@@ -950,35 +1031,9 @@ export function Layout() {
             return;
           }
 
-          const viewer =
-            cesiumRef.current?.viewer;
-
-          let position = null;
-
-          if (
-            viewer &&
-            !viewer.isDestroyed()
-          ) {
-
-            const cartesian =
-              Cesium.Cartesian3.fromDegrees(
-                lon,
-                lat
-              );
-
-            const screen =
-              Cesium.SceneTransforms
-                .worldToWindowCoordinates(
-                  viewer.scene,
-                  cartesian
-                );
-
-            if (screen) {
-              position = {
-                x: screen.x,
-                y: screen.y,
-              };
-            }
+          if (pointAbortControllerRef.current) {
+            pointAbortControllerRef.current.abort();
+            pointAbortControllerRef.current = null;
           }
 
           setClickedPosition({
@@ -986,12 +1041,13 @@ export function Layout() {
             lat,
           });
 
-          setOnlineScreenPosition(
-            position
-          );
+          const currentQueryId = ++pointQueryIdRef.current;
+          const controller = new AbortController();
+          pointAbortControllerRef.current = controller;
 
           setOnlinePointLoading(true);
           setOnlinePointData(null);
+          setOnlinePointError(null);
           setProcessingState({
             isProcessing: true,
             status: 'fetching',
@@ -999,47 +1055,78 @@ export function Layout() {
             message: `Querying nearest native ocean grid point for ${onlineState.variable}…`,
           });
 
-          try {
+          const date =
+            onlineState.resolvedDate ||
+            onlineState.date ||
+            selectedDate ||
+            'latest';
 
-            const date =
-              onlineState.resolvedDate ||
-              onlineState.date ||
-              'latest';
+          const datasetId = onlineState.datasetId || 'cmems_mod_glo_phy_my_0.083deg_P1D-m';
+
+          console.log('[YARA POINT] request-start', {
+            variable: onlineState.variable,
+            datasetId,
+            date,
+            lon,
+            lat,
+          });
+
+          try {
 
             const result =
               await fetchOnlinePoint(
-                onlineState.datasetId,
+                datasetId,
                 onlineState.variable,
                 date,
                 lon,
-                lat
+                lat,
+                controller.signal
               );
 
-            setOnlinePointData(
-              result
-            );
+            if (currentQueryId === pointQueryIdRef.current && !controller.signal.aborted) {
+              const rawVal =
+                result.value !== undefined && result.value !== null
+                  ? result.value
+                  : Array.isArray(result.values) && result.values.length > 0
+                  ? result.values[0]
+                  : null;
 
-            setProcessingState({
-              isProcessing: false,
-              status: 'idle',
-            });
+              console.log('[YARA POINT] response', result);
+              console.log('[YARA POINT] value', rawVal);
+              console.log('[YARA POINT] complete');
 
-          } catch (err) {
+              setOnlinePointData(result);
+              setOnlinePointError(null);
+              setProcessingState({
+                isProcessing: false,
+                status: 'idle',
+              });
+            }
 
-            console.error(
-              '[YARA] Online point query failed:',
-              err
-            );
+          } catch (err: any) {
 
-            setOnlinePointData(null);
-            setProcessingState({
-              isProcessing: false,
-              status: 'idle',
-            });
+            if (err.name === 'AbortError' || controller.signal.aborted) {
+              console.log('[YARA POINT] request cancelled/aborted for queryId', currentQueryId);
+              return;
+            }
+
+            const errMsg = String(err.message || err);
+            console.error('[YARA POINT] error:', errMsg);
+
+            if (currentQueryId === pointQueryIdRef.current) {
+              setOnlinePointData(null);
+              setOnlinePointError(errMsg);
+              setProcessingState({
+                isProcessing: false,
+                status: 'idle',
+              });
+            }
 
           } finally {
 
-            setOnlinePointLoading(false);
+            if (currentQueryId === pointQueryIdRef.current) {
+              setOnlinePointLoading(false);
+            }
 
           }
 
@@ -1050,12 +1137,13 @@ export function Layout() {
       [
         activeMode,
         activeDataset,
-        onlineState.variable,
-        onlineState.datasetId,
-        onlineState.resolvedDate,
-        onlineState.date,
+        onlineState,
+        selectedDate,
       ]
     );
+
+
+
 
 
   /* ------------------------------------------------------------------ */
@@ -1419,7 +1507,27 @@ export function Layout() {
           handleFrameLoadingChange
         }
 
+        onArgoGliderPick={
+          handleArgoGliderPick
+        }
+
+        onScreenPositionChange={
+          setOnlineScreenPosition
+        }
+
       />
+
+      {/* Argo/Glider is a separate CustomDataSource overlay. It never
+          enters the existing ocean-data rendering pipeline. */}
+      {viewerReady && cesiumRef.current?.viewer && (
+        <ArgoGliderOverlay
+          viewer={cesiumRef.current.viewer}
+          argoFloats={argoFloats}
+          gliders={gliderTrajectories}
+          argoVisible={argoVisible}
+          gliderVisible={gliderVisible}
+        />
+      )}
 
 
       {/* ============================================================ */}
@@ -1456,7 +1564,8 @@ export function Layout() {
       {activeMode === 'online' &&
         (
           onlinePointData ||
-          onlinePointLoading
+          onlinePointLoading ||
+          onlinePointError
         ) && (
 
           <OnlinePointInfoPanel
@@ -1468,14 +1577,23 @@ export function Layout() {
               onlinePointLoading
             }
 
+            error={
+              onlinePointError
+            }
+
             screenPosition={
               onlineScreenPosition
+            }
+
+            clickedPosition={
+              clickedPosition
             }
 
             onClose={() => {
 
               setOnlinePointData(null);
               setOnlinePointLoading(false);
+              setOnlinePointError(null);
               setClickedPosition(null);
               setOnlineScreenPosition(null);
 
@@ -1566,6 +1684,19 @@ export function Layout() {
 
           onColormapChange={
             setColormap
+          }
+
+          onApply={
+            activeMode === 'online' && onlineState.variable
+              ? () => {
+                  setProcessingState({
+                    isProcessing: true,
+                    status: 'fetching',
+                    title: 'Recoloring visualization\u2026',
+                    message: `Applying new color scale to ${onlineState.variable}\u2026`,
+                  });
+                }
+              : undefined
           }
 
           units={
@@ -1987,9 +2118,33 @@ export function Layout() {
               true
             )
           }
+
+          onOpenArgoGlider={() =>
+            setArgoGliderPanelOpen(value => !value)
+          }
         />
 
       </Box>
+
+      <ArgoGliderPanel
+        open={argoGliderPanelOpen}
+        onClose={() => setArgoGliderPanelOpen(false)}
+        argoFloats={argoFloats}
+        gliders={gliderTrajectories}
+        argoVisible={argoVisible}
+        gliderVisible={gliderVisible}
+        onArgoData={setArgoFloats}
+        onGliderData={setGliderTrajectories}
+        onArgoVisible={setArgoVisible}
+        onGliderVisible={setGliderVisible}
+        onClearArgo={handleClearArgo}
+        onClearGlider={handleClearGlider}
+      />
+
+      <ArgoGliderObservationPanel
+        observation={selectedArgo ?? selectedGlider}
+        onClose={() => { setSelectedArgo(null); setSelectedGlider(null); }}
+      />
 
 
       {/* ============================================================ */}

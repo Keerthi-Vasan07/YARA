@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { Box, Typography, Stack, alpha, CircularProgress, Slide } from '@mui/material';
 import { CheckCircle, ErrorOutline, Science } from '@mui/icons-material';
 
@@ -6,6 +7,7 @@ export interface ProcessingState {
   status: 'idle' | 'fetching' | 'processing' | 'success' | 'error';
   title?: string;
   message?: string;
+  stage?: 'connecting' | 'receiving' | 'generating' | 'loading' | 'updating';
 }
 
 interface ScientificProcessingToastProps {
@@ -14,6 +16,20 @@ interface ScientificProcessingToastProps {
 
 export function ScientificProcessingToast({ state }: ScientificProcessingToastProps) {
   const { isProcessing, status, title, message } = state;
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!isProcessing) {
+      setElapsed(0);
+      return;
+    }
+    const start = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isProcessing]);
 
   if (!isProcessing && status === 'idle') {
     return null;
@@ -112,6 +128,23 @@ export function ScientificProcessingToast({ state }: ScientificProcessingToastPr
             >
               {message || defaultMessage}
             </Typography>
+
+            {isProcessing && (
+              <Typography
+                variant="caption"
+                sx={{
+                  color: '#6EF2FC',
+                  fontSize: '0.62rem',
+                  fontFamily: 'monospace',
+                  fontWeight: 600,
+                  mt: 0.5,
+                  display: 'block',
+                  letterSpacing: '0.5px',
+                }}
+              >
+                Elapsed: {elapsed}s
+              </Typography>
+            )}
           </Stack>
         </Stack>
       </Box>

@@ -3,18 +3,20 @@ import { createPortal } from 'react-dom';
 import {
   Box, Typography, Stack, IconButton, Chip, alpha, CircularProgress, Divider,
 } from '@mui/material';
-import { Close, Place, CalendarMonth, DragIndicator } from '@mui/icons-material';
+import { Close, Place, CalendarMonth, DragIndicator, Layers, Height } from '@mui/icons-material';
 import { OnlinePointQuery } from '../api/onlineApi';
 
 interface OnlinePointInfoPanelProps {
   data: OnlinePointQuery | null;
   loading: boolean;
+  error?: string | null;
   onClose: () => void;
   screenPosition?: { x: number; y: number } | null;
+  clickedPosition?: { lat: number; lon: number } | null;
 }
 
 function varAccent(variable: string): string {
-  switch (variable) {
+  switch (variable.toLowerCase()) {
     case 'sst': return '#ff7043';
     case 'sss': return '#29b6f6';
     case 'chlorophyll': return '#66bb6a';
@@ -26,21 +28,61 @@ function varAccent(variable: string): string {
   }
 }
 
-function safeFixed(value: unknown, digits = 2, fallback = '—'): string {
-  const n = Number(value);
-  return Number.isFinite(n) ? n.toFixed(digits) : fallback;
+function formatLat(lat: number): string {
+  const abs = Math.abs(lat).toFixed(2);
+  return lat >= 0 ? `${abs}°N` : `${abs}°S`;
+}
+
+function formatLon(lon: number): string {
+  const abs = Math.abs(lon).toFixed(2);
+  return lon >= 0 ? `${abs}°E` : `${abs}°W`;
+}
+
+function formatLocationPair(lat: number, lon: number): string {
+  return `${formatLat(lat)}, ${formatLon(lon)}`;
+}
+
+function formatValueByVariable(val: number, variableKey: string, units: string): string {
+  const vk = (variableKey || '').toLowerCase();
+  const u = (units || '').toLowerCase();
+  if (vk === 'chlorophyll' || u.includes('mg/m') || (Math.abs(val) < 0.01 && val !== 0)) {
+    return val.toFixed(3);
+  }
+  if (vk === 'uo' || vk === 'vo' || vk === 'usi' || vk === 'vsi') {
+    return val.toFixed(3);
+  }
+  return val.toFixed(2);
+}
+
+function formatDateDisplay(rawDate?: string | null): string {
+  if (!rawDate) return '—';
+  try {
+    const d = new Date(rawDate);
+    if (!isNaN(d.getTime())) {
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const month = months[d.getUTCMonth()];
+      const year = d.getUTCFullYear();
+      const hours = String(d.getUTCHours()).padStart(2, '0');
+      const mins = String(d.getUTCMinutes()).padStart(2, '0');
+      return `${day} ${month} ${year} ${hours}:${mins} UTC`;
+    }
+  } catch {}
+  return String(rawDate).slice(0, 19).replace('T', ' ') + ' UTC';
 }
 
 export function OnlinePointInfoPanel({
   data,
   loading,
+  error,
   onClose,
   screenPosition,
+  clickedPosition,
 }: OnlinePointInfoPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const initialRight = 80;
   const initialTop = 20;
-  const panelWidth = 300;
+  const panelWidth = 320;
 
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -80,10 +122,10 @@ export function OnlinePointInfoPanel({
     };
   }, [isDragging]);
 
-  if (!data && !loading) return null;
+  if (!data && !loading && !error && !clickedPosition) return null;
 
-  const variableKey = data?.variable_key ?? '';
-  const accent = data ? varAccent(variableKey) : '#6EF2FC';
+  const variableKey = data?.variable || data?.variable_key || '';
+  const accent = varAccent(variableKey);
   const panelTop = initialTop + position.y;
   const panelRight = initialRight - position.x;
   const panelLeftEdge =
@@ -92,16 +134,30 @@ export function OnlinePointInfoPanel({
       : 0;
   const panelConnectionY = panelTop + 40;
 
-  const requestedLat = data?.requested_lat ?? data?.latitude;
-  const requestedLon = data?.requested_lon ?? data?.longitude;
+  const rawValue =
+    data?.value !== undefined && data?.value !== null
+      ? data.value
+      : Array.isArray(data?.values) && data.values.length > 0
+      ? data.values[0]
+      : null;
+
+  const hasValidValue = rawValue !== null && rawValue !== undefined && Number.isFinite(Number(rawValue));
+  const numericValue = hasValidValue ? Number(rawValue) : null;
+
+  const requestedLat = data?.requested_lat ?? data?.latitude ?? clickedPosition?.lat;
+  const requestedLon = data?.requested_lon ?? data?.longitude ?? clickedPosition?.lon;
   const matchedLat = data?.matched_lat ?? data?.latitude;
   const matchedLon = data?.matched_lon ?? data?.longitude;
-  const dateMatched = data?.matched_date ?? data?.date_matched ?? '—';
-  const dateRequested = data?.requested_date ?? data?.date_requested;
-  const unitsDisplay = data?.units_display ?? data?.units ?? '';
+
+  const dateMatched = data?.date_matched ?? data?.matched_date;
+  const dateRequested = data?.date_requested ?? data?.requested_date;
+  const dateDisplay = formatDateDisplay(dateMatched || dateRequested);
+
+  const displayName = data?.variable_name || data?.display_name || (variableKey ? variableKey.toUpperCase() : 'Ocean Scientific Data');
+  const unitsDisplay = data?.units || data?.units_display || '';
 
   const connectionLine =
-    screenPosition && (data || loading)
+    screenPosition && (data || loading || error || clickedPosition)
       ? createPortal(
           <svg
             style={{
@@ -144,21 +200,11 @@ export function OnlinePointInfoPanel({
         )
       : null;
 
-  const requestedLocation =
-    Number.isFinite(Number(requestedLat)) &&
-    Number.isFinite(Number(requestedLon))
-      ? `${safeFixed(requestedLat, 4)}°N, ${safeFixed(requestedLon, 4)}°E`
-      : '—';
+  const hasReqLoc = Number.isFinite(Number(requestedLat)) && Number.isFinite(Number(requestedLon));
+  const hasMatchLoc = Number.isFinite(Number(matchedLat)) && Number.isFinite(Number(matchedLon));
 
-  const matchedLocation =
-    Number.isFinite(Number(matchedLat)) &&
-    Number.isFinite(Number(matchedLon))
-      ? `${safeFixed(matchedLat, 4)}°N, ${safeFixed(matchedLon, 4)}°E`
-      : '—';
-
-  const valueDigits = variableKey === 'chlorophyll' ? 4 : 2;
-
-  const gridInfo = data?.grid;
+  const depthVal = Array.isArray(data?.depth_values) && data.depth_values.length > 0 ? data.depth_values[0] : null;
+  const depthDisplay = depthVal !== null ? (depthVal < 2.0 ? 'Surface' : `${depthVal.toFixed(1)} m`) : 'Surface';
 
   return (
     <>
@@ -171,14 +217,14 @@ export function OnlinePointInfoPanel({
           top: panelTop,
           right: panelRight,
           width: panelWidth,
-          bgcolor: 'rgba(6, 10, 18, 0.92)',
+          bgcolor: 'rgba(6, 10, 18, 0.94)',
           backdropFilter: 'blur(20px)',
           border: `1px solid ${alpha(accent, 0.35)}`,
           borderRadius: 0,
           overflow: 'hidden',
           zIndex: 1100,
           boxShadow:
-            '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,0,0,0.2)',
+            '0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,0,0,0.3)',
         }}
       >
         <Box
@@ -210,7 +256,7 @@ export function OnlinePointInfoPanel({
               fontWeight={700}
               sx={{ color: accent, fontSize: '0.78rem' }}
             >
-              {data?.display_name ?? 'Ocean Data'}
+              Ocean Data
             </Typography>
           </Stack>
 
@@ -228,21 +274,60 @@ export function OnlinePointInfoPanel({
 
         <Box sx={{ p: 2 }}>
           {loading ? (
-            <Stack alignItems="center" spacing={2} py={3}>
+            <Stack alignItems="center" spacing={2} py={2}>
               <CircularProgress size={32} sx={{ color: accent }} />
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" color="text.secondary" fontWeight={500}>
                 Querying ocean data…
               </Typography>
+              {hasReqLoc && (
+                <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'rgba(255,255,255,0.5)', fontSize: '0.7rem' }}>
+                  {formatLocationPair(Number(requestedLat), Number(requestedLon))}
+                </Typography>
+              )}
             </Stack>
+          ) : error ? (
+            <Box sx={{ py: 2, textAlign: 'center' }}>
+              <Typography variant="body2" sx={{ color: '#ef5350', fontWeight: 600 }}>
+                Unable to retrieve ocean data.
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.disabled"
+                sx={{ display: 'block', mt: 0.5 }}
+              >
+                {error}
+              </Typography>
+            </Box>
           ) : data ? (
             <Stack spacing={1.5}>
-              {data.value !== null && Number.isFinite(Number(data.value)) ? (
+
+              {/* Variable Title */}
+              <Box>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: 'rgba(255,255,255,0.4)',
+                    fontSize: '0.62rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.06em',
+                    display: 'block',
+                  }}
+                >
+                  Variable
+                </Typography>
+                <Typography variant="body2" fontWeight={700} sx={{ color: '#fff', fontSize: '0.85rem' }}>
+                  {displayName}
+                </Typography>
+              </Box>
+
+              {/* Value display block */}
+              {hasValidValue && numericValue !== null ? (
                 <Box
                   sx={{
                     p: 1.5,
                     borderRadius: 0,
-                    bgcolor: alpha(accent, 0.09),
-                    border: `1px solid ${alpha(accent, 0.25)}`,
+                    bgcolor: alpha(accent, 0.1),
+                    border: `1px solid ${alpha(accent, 0.3)}`,
                   }}
                 >
                   <Stack direction="row" alignItems="baseline" spacing={1}>
@@ -257,39 +342,29 @@ export function OnlinePointInfoPanel({
                         filter: 'brightness(1.2)',
                       }}
                     >
-                      {safeFixed(data.value, valueDigits)}
+                      {formatValueByVariable(numericValue, variableKey, unitsDisplay)}
                     </Typography>
 
                     <Typography
                       variant="body1"
                       sx={{
-                        color: alpha(accent, 0.75),
-                        fontWeight: 500,
+                        color: alpha(accent, 0.85),
+                        fontWeight: 600,
                       }}
                     >
                       {unitsDisplay}
                     </Typography>
                   </Stack>
-
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      color: 'rgba(255,255,255,0.4)',
-                      fontSize: '0.65rem',
-                    }}
-                  >
-                    {data.display_name}
-                  </Typography>
                 </Box>
               ) : (
-                <Box sx={{ py: 2, textAlign: 'center' }}>
-                  <Typography variant="body2" color="text.secondary">
-                    {data.message ?? 'No data at this location'}
+                <Box sx={{ py: 1.5, px: 1, textAlign: 'center', bgcolor: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.1)' }}>
+                  <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.7)', fontWeight: 600 }}>
+                    No ocean data available at this location.
                   </Typography>
                   <Typography
                     variant="caption"
                     color="text.disabled"
-                    sx={{ display: 'block', mt: 0.5 }}
+                    sx={{ display: 'block', mt: 0.5, fontSize: '0.65rem' }}
                   >
                     Land, cloud mask, or outside coverage
                   </Typography>
@@ -306,7 +381,7 @@ export function OnlinePointInfoPanel({
                   alignItems="center"
                   mb={0.75}
                 >
-                  <Place sx={{ fontSize: 13, color: 'text.secondary' }} />
+                  <Place sx={{ fontSize: 13, color: accent }} />
                   <Typography
                     variant="caption"
                     sx={{
@@ -327,12 +402,8 @@ export function OnlinePointInfoPanel({
                     gap: 0.75,
                   }}
                 >
-                  {[
-                    ['Requested', requestedLocation],
-                    ['Matched Grid Point', matchedLocation],
-                  ].map(([label, val]) => (
+                  {hasReqLoc && (
                     <Box
-                      key={label}
                       sx={{
                         p: 0.75,
                         bgcolor: 'rgba(255,255,255,0.04)',
@@ -347,133 +418,190 @@ export function OnlinePointInfoPanel({
                           display: 'block',
                         }}
                       >
-                        {label}
+                        Requested
                       </Typography>
                       <Typography
                         variant="caption"
                         sx={{
                           fontFamily: 'monospace',
-                          fontSize: '0.65rem',
-                          color: 'rgba(255,255,255,0.75)',
+                          fontSize: '0.68rem',
+                          color: '#fff',
+                          fontWeight: 600,
                         }}
                       >
-                        {val}
+                        {formatLocationPair(Number(requestedLat), Number(requestedLon))}
+                      </Typography>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontFamily: 'monospace',
+                          fontSize: '0.58rem',
+                          color: 'rgba(255,255,255,0.4)',
+                          display: 'block',
+                        }}
+                      >
+                        {Number(requestedLat).toFixed(4)}°, {Number(requestedLon).toFixed(4)}°
                       </Typography>
                     </Box>
-                  ))}
+                  )}
+
+                  {hasMatchLoc && (
+                    <Box
+                      sx={{
+                        p: 0.75,
+                        bgcolor: 'rgba(255,255,255,0.04)',
+                        borderRadius: 0.5,
+                      }}
+                    >
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color: 'rgba(255,255,255,0.35)',
+                          fontSize: '0.58rem',
+                          display: 'block',
+                        }}
+                      >
+                        Matched Grid Point
+                      </Typography>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontFamily: 'monospace',
+                          fontSize: '0.68rem',
+                          color: alpha(accent, 0.9),
+                          fontWeight: 600,
+                        }}
+                      >
+                        {formatLocationPair(Number(matchedLat), Number(matchedLon))}
+                      </Typography>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontFamily: 'monospace',
+                          fontSize: '0.58rem',
+                          color: 'rgba(255,255,255,0.4)',
+                          display: 'block',
+                        }}
+                      >
+                        {Number(matchedLat).toFixed(4)}°, {Number(matchedLon).toFixed(4)}°
+                      </Typography>
+                    </Box>
+                  )}
                 </Box>
               </Box>
 
-              {/* 1° x 1° Grid Box Geometry */}
-              {gridInfo ? (
-                <Box
-                  sx={{
-                    p: 0.75,
-                    bgcolor: 'rgba(255,255,255,0.03)',
-                    border: '1px dashed rgba(255,255,255,0.1)',
-                    borderRadius: 0.5,
-                  }}
-                >
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      color: 'rgba(255,255,255,0.35)',
-                      fontSize: '0.58rem',
-                      display: 'block',
-                      mb: 0.25,
-                    }}
-                  >
-                    1° × 1° Display Grid Box
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      fontFamily: 'monospace',
-                      fontSize: '0.62rem',
-                      color: 'rgba(255,255,255,0.7)',
-                    }}
-                  >
-                    Lat: [{gridInfo.lat_min}°, {gridInfo.lat_max}°] | Lon: [{gridInfo.lon_min}°, {gridInfo.lon_max}°]
-                  </Typography>
-                </Box>
-              ) : null}
-
               {/* Observation Date */}
-              <Stack direction="row" spacing={0.75} alignItems="center">
-                <CalendarMonth
-                  sx={{ fontSize: 13, color: 'text.secondary' }}
-                />
+              <Box>
+                <Stack direction="row" spacing={0.5} alignItems="center" mb={0.25}>
+                  <CalendarMonth sx={{ fontSize: 13, color: 'text.secondary' }} />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: 'rgba(255,255,255,0.4)',
+                      fontSize: '0.62rem',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.06em',
+                    }}
+                  >
+                    Date
+                  </Typography>
+                </Stack>
                 <Typography
                   variant="caption"
                   sx={{
-                    color: 'rgba(255,255,255,0.55)',
-                    fontSize: '0.7rem',
+                    color: 'rgba(255,255,255,0.85)',
+                    fontSize: '0.72rem',
+                    fontWeight: 600,
+                    pl: 2.25,
+                    display: 'block',
                   }}
                 >
-                  {dateMatched}
-
-                  {dateRequested && dateMatched && dateMatched !== dateRequested ? (
-                    <Typography
-                      component="span"
-                      variant="caption"
-                      sx={{
-                        color: 'rgba(255,255,255,0.35)',
-                        ml: 0.5,
-                        fontSize: '0.6rem',
-                      }}
-                    >
-                      (requested {dateRequested})
-                    </Typography>
-                  ) : null}
+                  {dateDisplay}
                 </Typography>
-              </Stack>
+              </Box>
+
+              {/* Depth */}
+              <Box>
+                <Stack direction="row" spacing={0.5} alignItems="center" mb={0.25}>
+                  <Height sx={{ fontSize: 13, color: 'text.secondary' }} />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: 'rgba(255,255,255,0.4)',
+                      fontSize: '0.62rem',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.06em',
+                    }}
+                  >
+                    Depth
+                  </Typography>
+                </Stack>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: 'rgba(255,255,255,0.85)',
+                    fontSize: '0.72rem',
+                    fontWeight: 600,
+                    pl: 2.25,
+                    display: 'block',
+                  }}
+                >
+                  {depthDisplay}
+                </Typography>
+              </Box>
 
               {/* Source & Provider Badges */}
-              <Stack
-                direction="row"
-                spacing={0.5}
-                flexWrap="wrap"
-                useFlexGap
-              >
-                {data.provider ? (
-                  <Chip
-                    label={data.provider}
-                    size="small"
-                    variant="outlined"
+              <Box>
+                <Stack direction="row" spacing={0.5} alignItems="center" mb={0.5}>
+                  <Layers sx={{ fontSize: 13, color: 'text.secondary' }} />
+                  <Typography
+                    variant="caption"
                     sx={{
-                      fontSize: '0.6rem',
-                      borderColor: alpha(accent, 0.4),
-                      color: accent,
+                      color: 'rgba(255,255,255,0.4)',
+                      fontSize: '0.62rem',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.06em',
                     }}
-                  />
-                ) : null}
+                  >
+                    Dataset
+                  </Typography>
+                </Stack>
 
-                {data.source && data.source !== data.provider ? (
-                  <Chip
-                    label={data.source}
-                    size="small"
-                    variant="outlined"
-                    sx={{
-                      fontSize: '0.6rem',
-                      borderColor: alpha(accent, 0.3),
-                      color: 'rgba(255,255,255,0.5)',
-                    }}
-                  />
-                ) : null}
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  flexWrap="wrap"
+                  useFlexGap
+                  pl={2.25}
+                >
+                  {data.provider && (
+                    <Chip
+                      label={data.provider}
+                      size="small"
+                      variant="outlined"
+                      sx={{
+                        fontSize: '0.6rem',
+                        borderColor: alpha(accent, 0.4),
+                        color: accent,
+                      }}
+                    />
+                  )}
 
-                {data.dataset_id ? (
-                  <Chip
-                    label={data.dataset_id}
-                    size="small"
-                    variant="outlined"
-                    sx={{
-                      fontSize: '0.6rem',
-                      borderColor: alpha(accent, 0.3),
-                      color: 'rgba(255,255,255,0.5)',
-                    }}
-                  />
-                ) : null}
-              </Stack>
+                  {data.dataset_id && (
+                    <Chip
+                      label={data.dataset_id}
+                      size="small"
+                      variant="outlined"
+                      sx={{
+                        fontSize: '0.6rem',
+                        borderColor: alpha(accent, 0.3),
+                        color: 'rgba(255,255,255,0.7)',
+                      }}
+                    />
+                  )}
+                </Stack>
+              </Box>
+
             </Stack>
           ) : null}
         </Box>
@@ -481,3 +609,4 @@ export function OnlinePointInfoPanel({
     </>
   );
 }
+

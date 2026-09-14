@@ -94,84 +94,93 @@ def open_remote_dataset(
     return copernicusmarine.open_dataset(**kwargs)
 
 def inspect_dataset_metadata(variable: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    # IMPORTANT: ds comes from lru_cache — do NOT close it.
     ds = _open_dataset_cached(cfg["dataset_id"], variable)
-    try:
-        if variable not in ds.data_vars:
-            raise ValueError(
-                f"Variable '{variable}' not returned by dataset. "
-                f"Available: {list(ds.data_vars)}"
-            )
-        da = ds[variable]
-        result = {
-            "variable_key": variable,
-            "dataset_id": cfg["dataset_id"],
-            "display_name": cfg["display_name"],
-            "units": cfg["units_display"],
-            "source": cfg["source"],
-            "provider": cfg["provider"],
-            "description": cfg["description"],
-            "opendap_url": cfg["opendap_url"],
-            "variable_name": variable,
-            "variable_attrs": {str(k): str(v) for k, v in da.attrs.items()},
-            "dimensions": list(da.dims),
-            "shape": [int(x) for x in da.shape],
-            "is_3d": bool(cfg.get("is_3d", False)),
-            "vmin": cfg["vmin"],
-            "vmax": cfg["vmax"],
-            "log_scale": cfg.get("log_scale", False),
-            "colormap": cfg.get("colormap", "viridis"),
-            "spatial_resolution_deg": cfg["spatial_resolution_deg"],
-        }
-        for name in ("latitude", "lat"):
-            if name in ds.coords:
-                result["lat_dim"] = name
-                result["n_lat"] = int(ds[name].size)
-                result["lat_range"] = [
-                    float(np.nanmin(ds[name].values)),
-                    float(np.nanmax(ds[name].values)),
-                ]
-                break
-        for name in ("longitude", "lon"):
-            if name in ds.coords:
-                result["lon_dim"] = name
-                result["n_lon"] = int(ds[name].size)
-                result["lon_range"] = [
-                    float(np.nanmin(ds[name].values)),
-                    float(np.nanmax(ds[name].values)),
-                ]
-                break
-        for name in ("time", "datetime", "date"):
-            if name in ds.coords:
-                result["time_dim"] = name
-                vals = np.asarray(ds[name].values)
-                result["n_times"] = int(vals.size)
-                if vals.size:
-                    result["time_range"] = [str(vals.flat[0]), str(vals.flat[-1])]
-                break
-        return result
-    finally:
-        _safe_close(ds)
+    if variable not in ds.data_vars:
+        raise ValueError(
+            f"Variable '{variable}' not returned by dataset. "
+            f"Available: {list(ds.data_vars)}"
+        )
+    da = ds[variable]
+    result = {
+        "variable_key": variable,
+        "dataset_id": cfg["dataset_id"],
+        "display_name": cfg["display_name"],
+        "units": cfg["units_display"],
+        "source": cfg["source"],
+        "provider": cfg["provider"],
+        "description": cfg["description"],
+        "opendap_url": cfg["opendap_url"],
+        "variable_name": variable,
+        "variable_attrs": {str(k): str(v) for k, v in da.attrs.items()},
+        "dimensions": list(da.dims),
+        "shape": [int(x) for x in da.shape],
+        "is_3d": bool(cfg.get("is_3d", False)),
+        "vmin": cfg["vmin"],
+        "vmax": cfg["vmax"],
+        "log_scale": cfg.get("log_scale", False),
+        "colormap": cfg.get("colormap", "viridis"),
+        "spatial_resolution_deg": cfg["spatial_resolution_deg"],
+    }
+    for name in ("latitude", "lat"):
+        if name in ds.coords:
+            result["lat_dim"] = name
+            result["n_lat"] = int(ds[name].size)
+            result["lat_range"] = [
+                float(np.nanmin(ds[name].values)),
+                float(np.nanmax(ds[name].values)),
+            ]
+            break
+    for name in ("longitude", "lon"):
+        if name in ds.coords:
+            result["lon_dim"] = name
+            result["n_lon"] = int(ds[name].size)
+            result["lon_range"] = [
+                float(np.nanmin(ds[name].values)),
+                float(np.nanmax(ds[name].values)),
+            ]
+            break
+    for name in ("time", "datetime", "date"):
+        if name in ds.coords:
+            result["time_dim"] = name
+            vals = np.asarray(ds[name].values)
+            result["n_times"] = int(vals.size)
+            if vals.size:
+                result["time_range"] = [str(vals.flat[0]), str(vals.flat[-1])]
+            break
+    return result
 
 def get_available_times(variable: str, cfg: Dict[str, Any]) -> list[str]:
+    # IMPORTANT: _open_dataset_cached uses lru_cache — do NOT close the returned
+    # dataset object, or the cache entry becomes a closed/invalid handle.
     ds = _open_dataset_cached(cfg["dataset_id"], variable)
+    name = next((n for n in ("time", "datetime", "date") if n in ds.coords), None)
+    if not name:
+        return []
+    values = np.asarray(ds[name].values)
+    out = []
+    for v in values.flat:
+        try:
+            out.append(np.datetime_as_string(np.datetime64(v), unit="s"))
+        except Exception:
+            out.append(str(v))
+    return out
+
+@lru_cache(maxsize=64)
+def _get_latest_time_cached(dataset_id: str, variable: str) -> Optional[str]:
+    """Cache the latest timestamp per (dataset, variable) to avoid re-opening
+    the full global dataset on every render_to_png call."""
+    ds = _open_dataset_cached(dataset_id, variable)
+    name = next((n for n in ("time", "datetime", "date") if n in ds.coords), None)
+    if not name or ds[name].size == 0:
+        return None
     try:
-        name = next((n for n in ("time", "datetime", "date") if n in ds.coords), None)
-        if not name:
-            return []
-        values = np.asarray(ds[name].values)
-        out = []
-        for v in values.flat:
-            try:
-                out.append(np.datetime_as_string(np.datetime64(v), unit="s"))
-            except Exception:
-                out.append(str(v))
-        return out
-    finally:
-        _safe_close(ds)
+        return np.datetime_as_string(np.datetime64(ds[name].values[-1]), unit="s")
+    except Exception:
+        return str(ds[name].values[-1])
 
 def get_latest_time(variable: str, cfg: Dict[str, Any]) -> Optional[str]:
-    times = get_available_times(variable, cfg)
-    return times[-1] if times else None
+    return _get_latest_time_cached(cfg["dataset_id"], variable)
 
 def _coord_name(ds, candidates):
     for name in candidates:
@@ -388,16 +397,33 @@ def render_to_png(
     vmin: float | None = None,
     vmax: float | None = None,
 ):
-    # Open the requested spatial/time subset through the Toolbox.
+    target_date = date
+    if target_date in (None, "", "latest"):
+        latest_val = get_latest_time(variable, cfg)
+        if latest_val:
+            target_date = latest_val
+
+    # CRITICAL PERFORMANCE FIX:
+    # For 3D (depth-dependent) variables, restrict to the shallowest level
+    # BEFORE opening the dataset. Without this, copernicusmarine downloads all
+    # 50 depth levels at full global resolution (~1.7 GB), causing the request
+    # to hang indefinitely. Surface-only rendering needs only the top level.
+    is_3d = bool(cfg.get("is_3d", False))
+    kwargs_depth: Dict[str, Any] = {}
+    if is_3d:
+        kwargs_depth = {"minimum_depth": 0.0, "maximum_depth": 1.0}
+
+    # Open the requested spatial/time/depth subset through the Toolbox.
     ds = open_remote_dataset(
         variable, cfg,
         minimum_longitude=lon_min, maximum_longitude=lon_max,
         minimum_latitude=lat_min, maximum_latitude=lat_max,
-        start_datetime=None if date == "latest" else date,
-        end_datetime=None if date == "latest" else date,
+        start_datetime=None if target_date in (None, "", "latest") else str(target_date)[:19],
+        end_datetime=None if target_date in (None, "", "latest") else str(target_date)[:19],
+        **kwargs_depth,
     )
     try:
-        ds, matched = _time_select(ds, date)
+        ds, matched = _time_select(ds, target_date)
         da = ds[variable]
         lat_name = _coord_name(ds, ("latitude", "lat"))
         lon_name = _coord_name(ds, ("longitude", "lon"))
@@ -410,7 +436,7 @@ def render_to_png(
         values = da.load().values
         png = _render_array_to_png(values, cfg, vmin=vmin, vmax=vmax,
                                    cmap_name=colormap)
-        return png, matched or date, {
+        return png, matched or target_date or date, {
             "west": float(lon_min), "south": float(lat_min),
             "east": float(lon_max), "north": float(lat_max),
             "width": int(np.asarray(values).shape[-1]),
@@ -426,19 +452,31 @@ def query_point(
     lon: float,
     lat: float,
 ):
+    target_date = date
+    if target_date in (None, "", "latest"):
+        latest_val = get_latest_time(variable, cfg)
+        if latest_val:
+            target_date = latest_val
+
     # Small remote subset around the clicked location.
     lon = _normalise_lon(lon)
+    is_3d = bool(cfg.get("is_3d", False))
+    kwargs_depth: Dict[str, Any] = {}
+    if is_3d:
+        kwargs_depth = {"minimum_depth": 0.0, "maximum_depth": 1.0}
+
     ds = open_remote_dataset(
         variable, cfg,
         minimum_longitude=max(-180.0, lon - 0.1),
         maximum_longitude=min(180.0, lon + 0.1),
         minimum_latitude=max(-90.0, lat - 0.1),
         maximum_latitude=min(90.0, lat + 0.1),
-        start_datetime=None if date == "latest" else date,
-        end_datetime=None if date == "latest" else date,
+        start_datetime=None if target_date in (None, "", "latest") else str(target_date)[:19],
+        end_datetime=None if target_date in (None, "", "latest") else str(target_date)[:19],
+        **kwargs_depth,
     )
     try:
-        ds, matched = _time_select(ds, date)
+        ds, matched = _time_select(ds, target_date)
         da = ds[variable]
         lat_name = _coord_name(ds, ("latitude", "lat"))
         lon_name = _coord_name(ds, ("longitude", "lon"))
