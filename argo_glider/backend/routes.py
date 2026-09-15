@@ -8,12 +8,19 @@ main YARA ocean service continues to start.
 """
 from __future__ import annotations
 
-import inspect
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
 router = APIRouter(prefix="/api/argo-glider", tags=["Argo / Glider"])
+
+# NOTE: every route below is declared with a plain `def`, not `async def`.
+# The readers do blocking network I/O (requests -> INCOIS, ftplib -> IFREMER).
+# Declaring them `async` would run that I/O directly on the event loop and
+# freeze the whole YARA app — a glider fetch measured ~25s and blocked
+# unrelated endpoints for the entire duration. With `def`, FastAPI runs each
+# handler in a threadpool, so a slow or failing Argo/Glider source can never
+# stall the Copernicus/OPeNDAP pipeline. The standalone module did the same.
 
 
 def _jsonable(value: Any) -> Any:
@@ -50,7 +57,7 @@ def _reader(module_name: str):
         ) from exc
 
 
-async def _call_reader(module_name: str, function_name: str):
+def _call_reader(module_name: str, function_name: str):
     module = _reader(module_name)
     function = getattr(module, function_name, None)
     if function is None:
@@ -59,10 +66,7 @@ async def _call_reader(module_name: str, function_name: str):
             detail=f"{module_name}.{function_name} is not available",
         )
     try:
-        result = function()
-        if inspect.isawaitable(result):
-            result = await result
-        return _jsonable(result)
+        return _jsonable(function())
     except HTTPException:
         raise
     except Exception as exc:
@@ -73,7 +77,7 @@ async def _call_reader(module_name: str, function_name: str):
 
 
 @router.get("/health")
-async def health():
+def health():
     argo_ok = glider_ok = False
     errors = {}
     try:
@@ -96,13 +100,13 @@ async def health():
 
 
 @router.get("/floats")
-async def floats():
-    return await _call_reader("argo_reader", "get_float_trajectories")
+def floats():
+    return _call_reader("argo_reader", "get_float_trajectories")
 
 
 @router.get("/stats")
-async def stats():
-    data = await _call_reader("argo_reader", "get_float_trajectories")
+def stats():
+    data = _call_reader("argo_reader", "get_float_trajectories")
 
     # Preserve reader-provided statistics when available.
     if isinstance(data, dict):
@@ -133,7 +137,7 @@ async def stats():
 
 
 @router.get("/gliders")
-async def gliders():
+def gliders(refresh: bool = False):
     """Adapter for glider_reader.get_glider_trajectories().
 
     The existing reader returns a (trajectories, statuses, discovery) tuple
@@ -150,9 +154,9 @@ async def gliders():
             detail="glider_reader.get_glider_trajectories is not available",
         )
     try:
-        result = function()
-        if inspect.isawaitable(result):
-            result = await result
+        # force_refresh bypasses the reader's own cache (same contract the
+        # standalone module exposed as /api/gliders?refresh=true).
+        result = function(force_refresh=refresh)
     except HTTPException:
         raise
     except Exception as exc:
@@ -172,7 +176,7 @@ async def gliders():
 
 
 @router.get("/sources")
-async def sources():
+def sources():
     return {
         "argo": {
             "module": "argo_glider.backend.argo_reader",

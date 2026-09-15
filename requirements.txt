@@ -46,6 +46,10 @@ earthkit-data>=0.5.0
 earthkit-regrid>=0.2.0
 earthkit-meteo>=0.1.0
 
+# Argo/Glider overlay (isolated module: INCOIS ERDDAP + IFREMER FTP only).
+# requests/pandas/xarray/netCDF4 are already provided above.
+truststore          # OS trust store for SSL, required by argo_glider readers
+
 # Testing
 pytest>=9.0.0
 pytest-asyncio>=1.0.0

@@ -57,41 +57,50 @@ export function ArgoGliderOverlay({
         Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 0),
       );
 
-      source.entities.add({
-        id: `argo-${float.id}-trajectory`,
-        polyline: {
-          positions,
-          width: 2,
-          material: Cesium.Color.YELLOW.withAlpha(0.72),
-          clampToGround: true,
-        },
-      });
+      if (positions.length > 1) {
+        source.entities.add({
+          id: `argo-${float.id}-trajectory`,
+          polyline: {
+            positions,
+            width: 2,
+            material: Cesium.Color.YELLOW.withAlpha(0.72),
+            clampToGround: true,
+          },
+        });
+      }
 
-      const last = valid[valid.length - 1];
-      source.entities.add({
-        id: `argo-${float.id}`,
-        position: Cesium.Cartesian3.fromDegrees(last.lon, last.lat, 0),
-        point: {
-          pixelSize: 8,
-          color: Cesium.Color.YELLOW,
-          outlineColor: Cesium.Color.BLACK,
-          outlineWidth: 1,
-          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        },
-        properties: {
-          kind: 'argo',
-          platform: float.id,
-          latitude: last.lat,
-          longitude: last.lon,
-          time: last.time ?? null,
-          depth: last.depth ?? null,
-          temperature: last.temperature ?? null,
-          salinity: last.salinity ?? null,
-          pressure: last.pressure ?? null,
-          cycle: last.cycle ?? null,
-          source: (float as { source?: unknown }).source ?? null,
-        },
+      // One entity per observation so every cycle's real measurements stay
+      // inspectable (the source reports temperature/salinity/pressure/cycle
+      // per observation, not just for the latest fix). The most recent
+      // observation is drawn larger to mark the float's current position.
+      const source_name = (float as { source?: unknown }).source ?? null;
+      valid.forEach((p, i) => {
+        const isLatest = i === valid.length - 1;
+        source.entities.add({
+          id: `argo-${float.id}-obs-${i}`,
+          position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 0),
+          point: {
+            pixelSize: isLatest ? 9 : 5,
+            color: Cesium.Color.YELLOW,
+            outlineColor: isLatest ? Cesium.Color.BLACK : Cesium.Color.YELLOW.darken(0.5, new Cesium.Color()),
+            outlineWidth: 1,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            ...(isLatest ? { disableDepthTestDistance: Number.POSITIVE_INFINITY } : {}),
+          },
+          properties: {
+            kind: 'argo',
+            platform: float.id,
+            latitude: p.lat,
+            longitude: p.lon,
+            time: p.time ?? null,
+            depth: p.depth ?? null,
+            temperature: p.temperature ?? null,
+            salinity: p.salinity ?? null,
+            pressure: p.pressure ?? null,
+            cycle: p.cycle ?? null,
+            source: source_name,
+          },
+        });
       });
     }
   }, [argoFloats]);
@@ -111,52 +120,47 @@ export function ArgoGliderOverlay({
         Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 0),
       );
 
-      source.entities.add({
-        id: `glider-${glider.id}-trajectory`,
-        polyline: {
-          positions,
-          width: 3,
-          material: Cesium.Color.CYAN.withAlpha(0.8),
-          clampToGround: true,
-        },
-      });
+      if (positions.length > 1) {
+        source.entities.add({
+          id: `glider-${glider.id}-trajectory`,
+          polyline: {
+            positions,
+            width: 3,
+            material: Cesium.Color.CYAN.withAlpha(0.8),
+            clampToGround: true,
+          },
+        });
+      }
 
-      const first = valid[0];
-      const last = valid[valid.length - 1];
-
-      source.entities.add({
-        id: `glider-${glider.id}-start`,
-        position: Cesium.Cartesian3.fromDegrees(first.lon, first.lat, 0),
-        point: {
-          pixelSize: 6,
-          color: Cesium.Color.CYAN,
-          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        },
-      });
-
-      source.entities.add({
-        id: `glider-${glider.id}-end`,
-        position: Cesium.Cartesian3.fromDegrees(last.lon, last.lat, 0),
-        point: {
-          pixelSize: 9,
-          color: Cesium.Color.WHITE,
-          outlineColor: Cesium.Color.CYAN,
-          outlineWidth: 2,
-          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        },
-        properties: {
-          kind: 'glider',
-          platform: glider.id,
-          latitude: last.lat,
-          longitude: last.lon,
-          time: last.time ?? null,
-          depth: last.depth ?? null,
-          temperature: last.temperature ?? null,
-          salinity: last.salinity ?? null,
-          pressure: (last as { pressure?: unknown }).pressure ?? null,
-          source: (glider as { source?: unknown }).source ?? (last as { source?: unknown }).source ?? null,
-        },
+      // One entity per glider fix, same rationale as Argo above. The final
+      // fix is highlighted so the glider's latest position stays obvious.
+      const gliderSource = (glider as { source?: unknown }).source ?? null;
+      valid.forEach((p, i) => {
+        const isLatest = i === valid.length - 1;
+        source.entities.add({
+          id: `glider-${glider.id}-obs-${i}`,
+          position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 0),
+          point: {
+            pixelSize: isLatest ? 9 : 4,
+            color: isLatest ? Cesium.Color.WHITE : Cesium.Color.CYAN,
+            outlineColor: Cesium.Color.CYAN,
+            outlineWidth: isLatest ? 2 : 1,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            ...(isLatest ? { disableDepthTestDistance: Number.POSITIVE_INFINITY } : {}),
+          },
+          properties: {
+            kind: 'glider',
+            platform: glider.id,
+            latitude: p.lat,
+            longitude: p.lon,
+            time: p.time ?? null,
+            depth: p.depth ?? null,
+            temperature: p.temperature ?? null,
+            salinity: p.salinity ?? null,
+            pressure: (p as { pressure?: unknown }).pressure ?? null,
+            source: gliderSource ?? (p as { source?: unknown }).source ?? null,
+          },
+        });
       });
     }
   }, [gliders]);

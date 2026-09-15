@@ -1,0 +1,42 @@
+# Environment and credentials
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Node & Frontend
+node_modules/
+**/node_modules/
+**/dist/
+*.tsbuildinfo
+.vite/
+.cache/
+
+# Local data caches & logs
+data/*.nc
+**/data/*.nc
+*.tmp
+*.log
+
+# Scratch & media artifacts
+scratch/
+**/scratch/
+media/
+scene.py
+**/scene.py
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

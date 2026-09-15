@@ -1,0 +1,11 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+xarray>=2024.7.0
+netCDF4>=1.7.1
+numpy>=1.26.4
+python-multipart>=0.0.9
+python-dotenv>=1.0.0
+copernicusmarine>=2.4.1
+zarr>=2.18.0
+pydap>=3.4.0
+global-land-mask>=1.0.0

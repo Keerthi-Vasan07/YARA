@@ -1,0 +1,148 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Real In-Situ Observations</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+html,body,#map{height:100%;margin:0}
+#panel{position:absolute;z-index:1000;top:12px;left:12px;background:rgba(255,255,255,0.95);backdrop-filter:blur(4px);padding:10px 12px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.2);font:12px/1.4 system-ui,sans-serif;width:250px}
+#panel h3{margin:0 0 4px;font-size:13px}.section{margin-top:6px;padding-top:6px;border-top:1px solid #eee}.status{margin:4px 0;font-size:11px}.ok{color:#167a32}.warn{color:#9a6200}.err{color:#b00020}
+.layer-row{margin:2px 0}.legend-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+button{padding:4px 10px;margin-top:6px;cursor:pointer;font-size:11px;border-radius:4px;border:1px solid #ccc;background:#f8f9fa;width:100%}
+button:hover{background:#e9ecef}
+.small{font-size:10px;color:#666;line-height:1.3;margin-top:4px}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h3>🌊 Real In-Situ Observations</h3>
+  <div id="status" class="status">Loading real data...</div>
+
+  <div class="section">
+    <b>Layers</b>
+    <div class="layer-row"><label><input id="argoToggle" type="checkbox" checked> <span class="legend-dot" style="background:#ffd400"></span>Argo</label></div>
+    <div class="layer-row"><label><input id="gliderToggle" type="checkbox" checked> <span class="legend-dot" style="background:#1677ff"></span>Glider</label></div>
+  </div>
+
+  <div class="section">
+    <b>Argo</b><br>
+    Platforms: <span id="argoPlatforms">—</span><br>
+    Observations: <span id="argoObservations">—</span><br>
+    Latest: <span id="argoLatest">—</span>
+  </div>
+
+  <div class="section">
+    <b>Glider</b><br>
+    Platforms: <span id="gliderPlatforms">—</span><br>
+    Observations: <span id="gliderObservations">—</span><br>
+    Latest: <span id="gliderLatest">—</span>
+    <div id="gliderSource" class="small"></div>
+  </div>
+
+  <button onclick="loadData(true)">Refresh</button>
+  <div class="small">Gliders are discovered dynamically from IFREMER Glider FTP.</div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map=L.map("map").setView([15,75],3);
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{attribution:"Tiles © Esri"}).addTo(map);
+const argoLines=L.layerGroup().addTo(map),argoMarkers=L.layerGroup().addTo(map);
+const gliderLines=L.layerGroup().addTo(map),gliderMarkers=L.layerGroup().addTo(map);
+
+function esc(v){return String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m]));}
+function fmt(v,unit=""){return (v==null||isNaN(v))?"N/A":`${Number(v).toFixed(3)} ${unit}`.trim();}
+function fmtTime(t){return t ? String(t).split('.')[0].replace('T', ' ') : "N/A";}
+
+function drawArgo(floats){
+  argoLines.clearLayers();argoMarkers.clearLayers();
+  let bounds=[];
+  for(const f of floats){
+    const ll=f.points.map(p=>[p.lat,p.lon]);bounds.push(...ll);
+    if(ll.length>1)L.polyline(ll,{weight:2,color:"#ffd400"}).addTo(argoLines);
+    for(const p of f.points){
+      L.circleMarker([p.lat,p.lon],{radius:5,fillOpacity:.9,fillColor:"#ffd400",color:"#8a7200",weight:1})
+       .bindPopup(`<b>Argo Float</b><br>Platform: ${esc(f.float_id)}<br>Source: ${esc(f.source)}<br>Time: ${esc(p.time)}<br>Lat: ${p.lat.toFixed(5)}°<br>Lon: ${p.lon.toFixed(5)}°<br>Temperature: ${fmt(p.temperature,"°C")}<br>Salinity: ${fmt(p.salinity,"PSU")}<br>Pressure: ${fmt(p.pressure,"dbar")}<br>Cycle: ${p.cycle??"N/A"}`).addTo(argoMarkers);
+    }
+  }
+  return bounds;
+}
+
+function drawGliders(platforms){
+  gliderLines.clearLayers();gliderMarkers.clearLayers();
+  let bounds=[];let count=0;let latest=null;
+  for(const g of platforms){
+    if(!g.points||!Array.isArray(g.points)) continue;
+    const validPoints=g.points.filter(p=>{
+      const lat=p.latitude??p.lat;
+      const lon=p.longitude??p.lon;
+      return lat!=null&&lon!=null&&!isNaN(lat)&&!isNaN(lon);
+    });
+    const ll=validPoints.map(p=>[p.latitude??p.lat,p.longitude??p.lon]);
+    bounds.push(...ll);count+=validPoints.length;
+    for(const p of validPoints){
+      if(p.time&&(!latest||p.time>latest)) latest=p.time;
+    }
+    if(ll.length>1)L.polyline(ll,{weight:2,color:"#1677ff",dashArray:"7 5"}).addTo(gliderLines);
+    for(const p of validPoints){
+      const lat=p.latitude??p.lat;
+      const lon=p.longitude??p.lon;
+      const gliderId=p.glider_id||g.glider_id||"N/A";
+      const source=p.source||g.source||"IFREMER Glider FTP (dynamically discovered)";
+      L.circleMarker([lat,lon],{radius:5,fillOpacity:.9,fillColor:"#1677ff",color:"#064b9b",weight:1})
+       .bindPopup(`<b>Glider Observation</b><br>Glider ID: ${esc(gliderId)}<br>Source: ${esc(source)}<br>Time: ${esc(p.time||"N/A")}<br>Latitude: ${lat.toFixed(5)}°<br>Longitude: ${lon.toFixed(5)}°<br>Depth: ${fmt(p.depth,"m")}<br>Temperature: ${fmt(p.temperature,"°C")}<br>Salinity: ${fmt(p.salinity,"PSU")}<br>Pressure: ${fmt(p.pressure,"dbar")}`).addTo(gliderMarkers);
+    }
+  }
+  document.getElementById("gliderPlatforms").textContent=platforms.length;
+  document.getElementById("gliderObservations").textContent=count;
+  document.getElementById("gliderLatest").textContent=fmtTime(latest);
+  return bounds;
+}
+
+function updateVisibility(){
+  if(document.getElementById("argoToggle").checked)map.addLayer(argoLines).addLayer(argoMarkers);else{map.removeLayer(argoLines);map.removeLayer(argoMarkers)}
+  if(document.getElementById("gliderToggle").checked)map.addLayer(gliderLines).addLayer(gliderMarkers);else{map.removeLayer(gliderLines);map.removeLayer(gliderMarkers)}
+}
+document.getElementById("argoToggle").onchange=updateVisibility;
+document.getElementById("gliderToggle").onchange=updateVisibility;
+
+async function loadData(force=false){
+  const status=document.getElementById("status");status.textContent="Loading real Argo + IFREMER Glider FTP data...";
+  try{
+    const gliderUrl=`http://127.0.0.1:8000/api/gliders${force?"?refresh=true":""}`;
+    const [fr,sr,gr]=await Promise.all([
+      fetch("http://127.0.0.1:8000/api/floats"),
+      fetch("http://127.0.0.1:8000/api/stats"),
+      fetch(gliderUrl)
+    ]);
+    if(!fr.ok||!sr.ok)throw Error("Argo API unavailable");
+    const floats=await fr.json(),s=await sr.json();
+    const argoBounds=drawArgo(floats);
+    document.getElementById("argoPlatforms").textContent=s.platform_count;
+    document.getElementById("argoObservations").textContent=s.observation_count;
+    document.getElementById("argoLatest").textContent=fmtTime(s.latest_observation);
+
+    if(gr.ok){
+      const g=await gr.json();
+      const gliderBounds=drawGliders(g.platforms||[]);
+      const ok=(g.source_status||[]).filter(x=>x.status==="ok").length;
+      document.getElementById("gliderSource").textContent=`Source: IFREMER Glider FTP (${ok} file(s) processed)`;
+      status.className="status ok";
+      status.textContent=`Loaded ${floats.length} Argo & ${g.platforms?.length||0} Glider dataset(s).`;
+      const bounds=[...argoBounds,...gliderBounds];if(bounds.length)map.fitBounds(bounds,{padding:[30,30],maxZoom:5});
+    }else{
+      document.getElementById("gliderSource").textContent="Glider source unavailable right now; Argo remains available.";
+      status.className="status warn";status.textContent=`Argo loaded. Glider discovery failed (HTTP ${gr.status}).`;
+      if(argoBounds.length)map.fitBounds(argoBounds,{padding:[30,30],maxZoom:5});
+    }
+    updateVisibility();
+  }catch(e){
+    console.error(e);status.className="status err";status.textContent=`API error: ${e.message}`;
+  }
+}
+loadData();
+</script>
+</body>
+</html>
