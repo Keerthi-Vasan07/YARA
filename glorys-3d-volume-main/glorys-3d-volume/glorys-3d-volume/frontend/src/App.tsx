@@ -9,6 +9,11 @@ import { fetchHealth, fetchTimeRange, fetchVolume, fetchProfile, fetchSubsurface
 import type { TimeRangeResponse, VolumeData, ProfileResponse, VerticalColumnResponse, GlorysHealth, OceanVariable, ProbePoint, VolumeRenderMode } from "./types";
 import { VARIABLE_CATALOGUE, isOpendapVariable } from "./types";
 import { calculateLayerSliceStats } from "./utils/layerStats";
+import { readIncomingBounds } from "./utils/incomingBounds";
+
+// Bounds handed over from YARA (1° x 1° cell of the clicked point), if any.
+// Read once at module load so the very first volume fetch already uses them.
+const incomingBounds = readIncomingBounds();
 
 export default function App() {
   const [health, setHealth] = useState<GlorysHealth | null>(null);
@@ -21,10 +26,12 @@ export default function App() {
   // Selected query parameters (focused regional default for sub-second/fast interactive responsiveness)
   const [selectedDate, setSelectedDate] = useState("2026-06-23");
   const [selectedVariable, setSelectedVariable] = useState<OceanVariable>("thetao");
-  const [lonMin, setLonMin] = useState(70.0);
-  const [lonMax, setLonMax] = useState(85.0);
-  const [latMin, setLatMin] = useState(8.0);
-  const [latMax, setLatMax] = useState(20.0);
+  // Coordinates supplied by YARA take priority; the regional defaults below are
+  // only used when the app is opened directly without bounds in the URL.
+  const [lonMin, setLonMin] = useState(incomingBounds?.lonMin ?? 70.0);
+  const [lonMax, setLonMax] = useState(incomingBounds?.lonMax ?? 85.0);
+  const [latMin, setLatMin] = useState(incomingBounds?.latMin ?? 8.0);
+  const [latMax, setLatMax] = useState(incomingBounds?.latMax ?? 20.0);
   const [depthMin, setDepthMin] = useState(0.0);
   const [depthMax, setDepthMax] = useState(500.0);
   const [lod, setLod] = useState(1); // 0=Coarse, 1=Balanced, 2=Fine
@@ -233,8 +240,10 @@ export default function App() {
         const initialDate = tr.end || "2026-06-23";
         setSelectedDate(initialDate);
 
-        // Load initial volume
-        await handleLoadVolume({ date: initialDate });
+        // Load initial volume. When YARA handed over a grid cell, pass it
+        // explicitly so the first fetch targets that region rather than the
+        // app's own default bounds.
+        await handleLoadVolume({ date: initialDate, ...(incomingBounds ?? {}) });
         isInitialMountRef.current = false;
       } catch (e: unknown) {
         const err = e as { message?: string };

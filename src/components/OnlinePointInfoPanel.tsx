@@ -1,10 +1,12 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Box, Typography, Stack, IconButton, Chip, alpha, CircularProgress, Divider,
+  Box, Typography, Stack, IconButton, Chip, alpha, CircularProgress, Divider, Button,
 } from '@mui/material';
-import { Close, Place, CalendarMonth, DragIndicator, Layers, Height } from '@mui/icons-material';
+import { Close, Place, CalendarMonth, DragIndicator, Layers, Height, ViewInAr } from '@mui/icons-material';
 import { OnlinePointQuery } from '../api/onlineApi';
+import { getSelectedGridBounds } from '../utils/gridBounds';
+import { GLORYS_APP_URL } from '../api/config';
 
 interface OnlinePointInfoPanelProps {
   data: OnlinePointQuery | null;
@@ -148,6 +150,26 @@ export function OnlinePointInfoPanel({
   const requestedLon = data?.requested_lon ?? data?.longitude ?? clickedPosition?.lon;
   const matchedLat = data?.matched_lat ?? data?.latitude;
   const matchedLon = data?.matched_lon ?? data?.longitude;
+
+  // 1° x 1° cell containing the clicked point, using YARA's existing integer-degree
+  // grid convention (see utils/gridBounds.ts).
+  const gridBounds =
+    requestedLat !== undefined && requestedLon !== undefined
+      ? getSelectedGridBounds(requestedLat, requestedLon)
+      : null;
+
+  // Plain function, not useCallback: this sits after the component's early
+  // `return null`, so a hook here would violate the Rules of Hooks.
+  const openDetailedAnalysis = () => {
+    if (!gridBounds) return;
+    const params = new URLSearchParams({
+      lonMin: String(gridBounds.lonMin),
+      lonMax: String(gridBounds.lonMax),
+      latMin: String(gridBounds.latMin),
+      latMax: String(gridBounds.latMax),
+    });
+    window.open(`${GLORYS_APP_URL}/?${params.toString()}`, '_blank', 'noopener,noreferrer');
+  };
 
   const dateMatched = data?.date_matched ?? data?.matched_date;
   const dateRequested = data?.date_requested ?? data?.requested_date;
@@ -604,6 +626,46 @@ export function OnlinePointInfoPanel({
 
             </Stack>
           ) : null}
+
+          {/* Hand the selected point's 1° x 1° cell to the detailed subsurface
+              (GLORYS 3D volume) app. Shown only once a real coordinate is known. */}
+          {requestedLat !== undefined && requestedLon !== undefined && (
+            gridBounds ? (
+              <Box sx={{ px: 2, pb: 2, pt: 1 }}>
+                <Button
+                  fullWidth
+                  size="small"
+                  variant="outlined"
+                  startIcon={<ViewInAr sx={{ fontSize: 16 }} />}
+                  onClick={openDetailedAnalysis}
+                  sx={{
+                    textTransform: 'none',
+                    fontSize: '0.72rem',
+                    borderColor: alpha(accent, 0.45),
+                    color: accent,
+                    '&:hover': {
+                      borderColor: accent,
+                      bgcolor: alpha(accent, 0.08),
+                    },
+                  }}
+                >
+                  Detailed Subsurface Analysis
+                </Button>
+                <Typography
+                  variant="caption"
+                  sx={{ display: 'block', mt: 0.5, color: 'rgba(255,255,255,0.45)', fontSize: '0.6rem' }}
+                >
+                  Grid {gridBounds.latMin}° to {gridBounds.latMax}°, {gridBounds.lonMin}° to {gridBounds.lonMax}°
+                </Typography>
+              </Box>
+            ) : (
+              <Box sx={{ px: 2, pb: 2, pt: 1 }}>
+                <Typography variant="caption" sx={{ color: '#ff8a65', fontSize: '0.65rem' }}>
+                  Could not determine a 1° grid cell for this location.
+                </Typography>
+              </Box>
+            )
+          )}
         </Box>
       </Box>
     </>
