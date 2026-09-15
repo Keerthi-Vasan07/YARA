@@ -49,6 +49,8 @@ earthkit-meteo>=0.1.0
 # Argo/Glider overlay (isolated module: INCOIS ERDDAP + IFREMER FTP only).
 # requests/pandas/xarray/netCDF4 are already provided above.
 truststore          # OS trust store for SSL, required by argo_glider readers
+certifi             # CA roots; combined with the bundled GlobalSign intermediate
+                    # to verify INCOIS, which serves an incomplete chain
 
 # Testing
 pytest>=9.0.0

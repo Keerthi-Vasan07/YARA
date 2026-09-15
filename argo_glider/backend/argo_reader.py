@@ -1,11 +1,10 @@
-import truststore
-truststore.inject_into_ssl()
 import pandas as pd
 import requests
 import threading
 from dataclasses import dataclass,field
 from typing import Optional
 from .config import *
+from .ssl_support import incois_ca_bundle
 
 @dataclass
 class FloatObservation:
@@ -32,7 +31,9 @@ def fetch_argo_dataframe():
     variables=",".join(ERDDAP_VARIABLES)
     constraints=f"time>={DATA_START_DATE}&PRES>=0&PRES<={SURFACE_PRESSURE_MAX}"
     url=f"{ERDDAP_BASE_URL}.json?{variables}&{constraints}"
-    r=requests.get(url,timeout=REQUEST_TIMEOUT_SECONDS)
+    # INCOIS omits its intermediate CA, so we pass a bundle of certifi's roots
+    # plus that intermediate. Verification stays on -- see ssl_support.py.
+    r=requests.get(url,timeout=REQUEST_TIMEOUT_SECONDS,verify=incois_ca_bundle())
     r.raise_for_status()
     payload=r.json()["table"]
     df=pd.DataFrame(payload["rows"],columns=payload["columnNames"])

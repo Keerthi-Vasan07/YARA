@@ -8,11 +8,53 @@ main YARA ocean service continues to start.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/argo-glider", tags=["Argo / Glider"])
+
+# Upstream source behind each reader, used for clear error reporting.
+_SOURCE_OF = {
+    "argo_reader": "INCOIS",
+    "glider_reader": "IFREMER",
+}
+
+
+def _safe_reason(exc: Exception) -> str:
+    """Short, non-leaky explanation of why an upstream fetch failed.
+
+    The full exception (with URL and stack) is logged server-side; only this
+    summary is returned to the browser.
+    """
+    name = type(exc).__name__
+    text = f"{name} {exc}"
+    if "SSL" in text or "Certificate" in text:
+        return "TLS certificate verification failed"
+    if "Timeout" in name or "timed out" in text:
+        return "the source timed out"
+    if "Connection" in name or "Resolution" in text:
+        return "the source could not be reached"
+    if "HTTPError" in name or "status" in text.lower():
+        return "the source returned an error response"
+    return "the source returned an unexpected error"
+
+
+def _upstream_failure(module_name: str, exc: Exception) -> HTTPException:
+    """Log the real cause, return a clean 502 the UI can display."""
+    source = _SOURCE_OF.get(module_name, module_name)
+    logger.exception("%s data source request failed (%s)", source, module_name)
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error": f"{source} data source unavailable",
+            "source": source,
+            "reason": _safe_reason(exc),
+        },
+    )
 
 # NOTE: every route below is declared with a plain `def`, not `async def`.
 # The readers do blocking network I/O (requests -> INCOIS, ftplib -> IFREMER).
@@ -70,10 +112,7 @@ def _call_reader(module_name: str, function_name: str):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"{function_name} failed: {exc}",
-        ) from exc
+        raise _upstream_failure(module_name, exc) from exc
 
 
 @router.get("/health")
@@ -160,10 +199,7 @@ def gliders(refresh: bool = False):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"get_glider_trajectories failed: {exc}",
-        ) from exc
+        raise _upstream_failure("glider_reader", exc) from exc
 
     if isinstance(result, tuple) and len(result) == 3:
         trajectories, statuses, discovery = result

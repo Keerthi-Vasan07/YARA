@@ -44,15 +44,32 @@ import { API_BASE_URL } from './config';
 
 const API_BASE = `${API_BASE_URL}/api/argo-glider`;
 
+/**
+ * The backend reports upstream failures as a structured detail object
+ * ({ error, source, reason }) so the UI can show what actually went wrong
+ * without leaking internals. Older/other errors may still send a plain string,
+ * so both shapes are handled.
+ */
+function describeDetail(detail: unknown, status: number): string {
+  if (typeof detail === 'string' && detail) return detail;
+  if (detail && typeof detail === 'object') {
+    const d = detail as { error?: unknown; source?: unknown; reason?: unknown };
+    if (d.error) {
+      return d.reason ? `${String(d.error)} — ${String(d.reason)}` : String(d.error);
+    }
+  }
+  return `Argo/Glider API error (${status})`;
+}
+
 async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { signal });
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     const detail =
       body && typeof body === 'object' && 'detail' in body
-        ? String((body as { detail?: unknown }).detail)
-        : `Argo/Glider API error (${response.status})`;
-    throw new Error(detail);
+        ? (body as { detail?: unknown }).detail
+        : undefined;
+    throw new Error(describeDetail(detail, response.status));
   }
   return body as T;
 }

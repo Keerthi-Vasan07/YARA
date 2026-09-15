@@ -18,6 +18,11 @@
 *.p12
 *.pfx
 
+# Exception: public CA certificate (NOT a secret) required to verify the INCOIS
+# ERDDAP endpoint, which serves an incomplete chain. Must be deployed, so it is
+# deliberately exempted from the *.pem rule above. See argo_glider/backend/ssl_support.py
+!argo_glider/backend/certs/*.pem
+
 # Local credentials / tokens
 credentials.json
 secrets.json
