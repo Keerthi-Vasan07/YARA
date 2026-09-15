@@ -6,7 +6,7 @@ import {
 import { Close, Place, CalendarMonth, DragIndicator, Layers, Height, ViewInAr } from '@mui/icons-material';
 import { OnlinePointQuery } from '../api/onlineApi';
 import { getSelectedGridBounds } from '../utils/gridBounds';
-import { GLORYS_APP_URL } from '../api/config';
+import { GLORYS_APP_URL, isGlorysConfigured } from '../api/config';
 
 interface OnlinePointInfoPanelProps {
   data: OnlinePointQuery | null;
@@ -88,6 +88,9 @@ export function OnlinePointInfoPanel({
 
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  // Declared with the other hooks (before this component's early return) so the
+  // Rules of Hooks hold.
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const dragStartRef = useRef({ x: 0, y: 0, posX: 0, posY: 0 });
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -162,6 +165,17 @@ export function OnlinePointInfoPanel({
   // `return null`, so a hook here would violate the Rules of Hooks.
   const openDetailedAnalysis = () => {
     if (!gridBounds) return;
+    if (!isGlorysConfigured) {
+      // Never open a URL we know cannot resolve (e.g. localhost from production).
+      console.error(
+        'GLORYS application URL is not configured. ' +
+        'Set VITE_GLORYS_APP_URL in the YARA frontend environment to the deployed ' +
+        'GLORYS frontend origin, then rebuild (Vite inlines env vars at build time).'
+      );
+      setLaunchError('Detailed subsurface analysis is not configured for this deployment.');
+      return;
+    }
+    setLaunchError(null);
     const params = new URLSearchParams({
       lonMin: String(gridBounds.lonMin),
       lonMax: String(gridBounds.lonMax),
@@ -657,6 +671,14 @@ export function OnlinePointInfoPanel({
                 >
                   Grid {gridBounds.latMin}° to {gridBounds.latMax}°, {gridBounds.lonMin}° to {gridBounds.lonMax}°
                 </Typography>
+                {launchError && (
+                  <Typography
+                    variant="caption"
+                    sx={{ display: 'block', mt: 0.5, color: '#ff8a65', fontSize: '0.6rem' }}
+                  >
+                    {launchError}
+                  </Typography>
+                )}
               </Box>
             ) : (
               <Box sx={{ px: 2, pb: 2, pt: 1 }}>
