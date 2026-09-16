@@ -12,7 +12,18 @@ import type {
   PointProbeResponse,
 } from "./types";
 
-const BASE = "/api";
+const envApiBase =
+  (import.meta.env.VITE_GLORYS_API_BASE_URL as string | undefined) ||
+  (import.meta.env.VITE_API_BASE_URL as string | undefined);
+
+function getApiBase(rawUrl?: string): string {
+  if (!rawUrl || !rawUrl.trim()) return "/api";
+  const clean = rawUrl.trim().replace(/\/+$/, "");
+  if (clean.endsWith("/api")) return clean;
+  return `${clean}/api`;
+}
+
+const BASE = getApiBase(envApiBase);
 
 export async function fetchHealth(): Promise<GlorysHealth> {
   const res = await fetch(`${BASE}/glorys/health`);
